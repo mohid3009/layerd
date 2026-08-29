@@ -1,0 +1,22 @@
+# --- Python ---
+__pycache__/
+*.pyc
+lidarvenv/
+*.egg-info/
+
+# --- Node ---
+node_modules/
+3d_map/frontend/dist/
+
+# --- databases / data ---
+ulpin.db
+*.db-journal
+lidar/full_lidar_centered.ply
+
+# --- logs ---
+*.log
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.vscode/

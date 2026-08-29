@@ -1,0 +1,19 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "name": "lidar-coverage-area" },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [[
+          [175.4674, -37.8975],
+          [175.4747, -37.8975],
+          [175.4747, -37.8933],
+          [175.4674, -37.8933],
+          [175.4674, -37.8975]
+        ]]
+      }
+    }
+  ]
+}
