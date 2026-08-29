@@ -15,6 +15,7 @@ Pipeline (modelled on lidar/lidar.py):
 """
 
 import json
+import math
 import time
 import urllib.error
 import urllib.parse
@@ -46,11 +47,15 @@ OVERPASS_ENDPOINTS = (
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
 )
 
-# Overpass chokes (HTTP 500) on very large areas — keep the bbox sane.
-MAX_BBOX_AREA_DEG2 = 0.02  # deg², roughly a 14 km × 14 km box
+# Large bboxes are auto-split into tiles of at most this area (deg²).
+TILE_AREA_DEG2 = 0.02        # ~14 km × 14 km per Overpass query
+MIN_TILE_AREA_DEG2 = 0.0005  # below this a failing tile is not split further
+MAX_TILES = 60               # hard cap → ~1.2 deg² (~110 km × 110 km) max
 
 # Server-side transient failures worth retrying.
 RETRYABLE_CODES = {429, 500, 502, 503, 504}
+
+UA = "3d-ulpin-lidar-demo/1.0"
 
 
 class LidarExtractionError(ValueError):
@@ -257,20 +262,20 @@ def extract_building_heights(geojson, points_wgs84, floor_height=3.0):
     pts = points_wgs84
     lons, lats, z = pts[:, 0], pts[:, 1], pts[:, 2]
 
+    # spatial index over the whole cloud once — per-building point lookups
+    # become ~instant even with tens of thousands of footprints
+    tree = shapely.STRtree(shapely.points(lons, lats))
+
     features = []
     n_lidar = 0
     n_assumed = 0
     heights = []
 
     for idx, label, geom, props in polys:
-        minx, miny, maxx, maxy = geom.bounds
-        cand = (lons >= minx) & (lons <= maxx) & (lats >= miny) & (lats <= maxy)
-        zi = np.array([], dtype=float)
-        if cand.any():
-            sel_pts = shapely.points(lons[cand], lats[cand])
-            shapely.prepare(geom)
-            inside = shapely.covers(geom, sel_pts)
-            zi = z[cand][inside]
+        # predicate is evaluated as contains(geom, point) → points inside the
+        # footprint (STRtree argument order: input geometry first)
+        hit_idx = tree.query(geom, predicate="contains")
+        zi = z[hit_idx]
 
         if len(zi) >= MIN_POINTS_FOR_HEIGHT:
             ground_z, roof_z, height_m, stories = _height_from_points(zi, floor_height)
@@ -339,69 +344,142 @@ def _aoi_bounds(geojson):
     return miny, minx, maxy, maxx
 
 
-def fetch_osm_buildings(geojson, timeout=90, retries_per_endpoint=2):
-    """
-    Fetch building footprints from OSM (Overpass API) for the region covered
-    by the area-of-interest GeoJSON. Returns a GeoJSON FeatureCollection whose
-    features carry the original OSM tags as properties.
+class _OverpassBusy(Exception):
+    """Tile query failed with a transient/server-side error — caller may split."""
 
-    Overpass public instances frequently return transient 429/5xx under load,
-    so each mirror is retried and the next mirror is tried on failure.
-    """
-    s, w, n, e = _aoi_bounds(geojson)
-    area = (n - s) * (e - w)
-    if area > MAX_BBOX_AREA_DEG2:
-        raise LidarExtractionError(
-            f"bounding box too large for a live Overpass query ({area:.3f} deg² — "
-            f"keep it under {MAX_BBOX_AREA_DEG2} deg², roughly a 14 km × 14 km box)"
-        )
+    def __init__(self, detail):
+        super().__init__(detail)
+        self.detail = detail
 
+
+def _overpass_query(s, w, n, e, timeout):
+    """Run one Overpass query for a bbox; returns parsed JSON on success."""
     query = (
         f"[out:json][timeout:{timeout}];"
         f'way["building"]({s:.6f},{w:.6f},{n:.6f},{e:.6f});'
         "out geom;"
     )
     data = urllib.parse.urlencode({"data": query}).encode()
-
-    payload = None
     last_err = None
     for url in OVERPASS_ENDPOINTS:
         host = url.split("/")[2]
-        for attempt in range(retries_per_endpoint):
+        for attempt in range(2):
             try:
                 req = urllib.request.Request(
-                    url,
-                    data=data,
-                    headers={"User-Agent": "3d-ulpin-lidar-demo/1.0"},
+                    url, data=data, headers={"User-Agent": UA}
                 )
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     payload = json.loads(resp.read())
-                break
+                remark = payload.get("remark") or ""
+                if "runtime error" in remark:
+                    raise _OverpassBusy(f"runtime error: {remark}")
+                return payload
             except urllib.error.HTTPError as err:
                 last_err = f"HTTP {err.code} from {host}"
                 if err.code not in RETRYABLE_CODES:
-                    # 4xx (bad query etc.) — retrying other mirrors won't help
                     raise LidarExtractionError(
                         f"Overpass rejected the query ({last_err})"
                     ) from err
+            except _OverpassBusy:
+                raise
             except Exception as err:  # timeouts, DNS, connection resets
                 last_err = f"{type(err).__name__}: {err}"
-            if attempt < retries_per_endpoint - 1:
-                time.sleep(1.5 * (attempt + 1))
-        if payload is not None:
-            break
-    if payload is None:
+            if attempt == 0:
+                time.sleep(1.5)
+    raise _OverpassBusy(last_err)
+
+
+def _fetch_tile(s, w, n, e, timeout, elements, depth):
+    """
+    Fetch one tile; on a transient/server failure, split it into quadrants and
+    retry each (dense cities choke on big tiles, quadrants usually succeed).
+    Results are merged into `elements` keyed by OSM element id.
+    """
+    try:
+        payload = _overpass_query(s, w, n, e, timeout)
+    except _OverpassBusy as err:
+        if depth < 3 and (n - s) * (e - w) / 4 >= MIN_TILE_AREA_DEG2:
+            latm, lonm = (s + n) / 2, (w + e) / 2
+            for quad in (
+                (s, w, latm, lonm),
+                (s, lonm, latm, e),
+                (latm, w, n, lonm),
+                (latm, lonm, n, e),
+            ):
+                _fetch_tile(*quad, timeout, elements, depth + 1)
+            return
         raise LidarExtractionError(
-            f"Overpass unavailable (last error: {last_err}). The public servers "
-            "are often transiently overloaded — try again in a moment, or use "
-            "a smaller bounding box."
+            f"Overpass unavailable (last error: {err.detail}). The public servers "
+            "are often transiently overloaded — try again in a moment."
+        ) from err
+    for el in payload.get("elements", []):
+        elements[el.get("id")] = el
+
+
+def fetch_osm_buildings(geojson, timeout=90, progress=None):
+    """
+    Fetch building footprints from OSM (Overpass API) for the region covered
+    by the area-of-interest GeoJSON. Large areas are automatically split into
+    tiles (and tiles further split when a server refuses them); results are
+    deduplicated by OSM way id. Returns a GeoJSON FeatureCollection whose
+    features carry the original OSM tags as properties.
+    """
+    s, w, n, e = _aoi_bounds(geojson)
+    side = math.sqrt(TILE_AREA_DEG2)
+    nx = max(1, math.ceil((e - w) / side))
+    ny = max(1, math.ceil((n - s) / side))
+    if nx * ny > MAX_TILES:
+        raise LidarExtractionError(
+            f"bounding box too large ({(n - s) * (e - w):.3f} deg² — would need "
+            f"{nx * ny} Overpass tiles; keep it under {MAX_TILES} tiles "
+            f"(~{math.sqrt(MAX_TILES * TILE_AREA_DEG2):.2f} deg², "
+            f"roughly a 110 km × 110 km box))"
         )
 
-    remark = payload.get("remark") or ""
-    if "runtime error" in remark:
-        raise LidarExtractionError(
-            f"Overpass runtime error: {remark} — try a smaller bounding box"
+    tiles = [
+        (
+            s + i * (n - s) / ny,
+            w + j * (e - w) / nx,
+            s + (i + 1) * (n - s) / ny,
+            w + (j + 1) * (e - w) / nx,
         )
+        for i in range(ny)
+        for j in range(nx)
+    ]
+
+    elements = {}
+    done = 0
+    for ts, tw, tn, te in tiles:
+        _fetch_tile(ts, tw, tn, te, timeout, elements, 0)
+        done += 1
+        if progress:
+            progress(done, len(tiles))
+        time.sleep(0.4)  # be polite to the public mirrors
+
+    features = []
+    for el in elements.values():
+        if el.get("type") != "way":
+            continue
+        coords = [[pt["lon"], pt["lat"]] for pt in (el.get("geometry") or [])]
+        if len(coords) < 4:
+            continue
+        if coords[0] != coords[-1]:  # close the ring
+            coords.append(coords[0])
+        tags = el.get("tags") or {}
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {
+                    "osm_id": f"way/{el.get('id')}",
+                    "name": tags.get("name"),
+                    "building": tags.get("building"),
+                    "building_levels": tags.get("building:levels"),
+                    "osm_height": tags.get("height"),
+                },
+                "geometry": {"type": "Polygon", "coordinates": [coords]},
+            }
+        )
+    return {"type": "FeatureCollection", "features": features}
 
     features = []
     for el in payload.get("elements", []):

@@ -578,7 +578,7 @@ export default function LidarMap() {
                     <span className="step-dot" />
                     <span>{s.label}</span>
                     <span className="step-state muted tiny">
-                      {s.state === 'done' ? '✓' : s.state === 'error' ? '✕' : s.state === 'running' ? '…' : ''}
+                      {s.state === 'done' ? '✓' : s.state === 'error' ? '✕' : s.note || (s.state === 'running' ? '…' : '')}
                     </span>
                   </div>
                 ))}

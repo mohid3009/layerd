@@ -62,11 +62,13 @@ def get_job(job_id):
         return JOBS.get(job_id)
 
 
-def _set_step(job, key, state):
+def _set_step(job, key, state, note=None):
     with _lock:
         for s in job["steps"]:
             if s["key"] == key:
                 s["state"] = state
+                if note is not None:
+                    s["note"] = note
         if state == "running":
             job["state"] = "running"
 
@@ -113,7 +115,10 @@ def run_extraction(job, mode, laz_bytes, footprints_bytes, bbox, bbox_crs, epsg,
         # ── step 3: building footprints (OSM or uploaded GeoJSON) ───────────
         _set_step(job, "footprints", "running")
         if mode == "osm":
-            source_fc = fetch_osm_buildings(bbox_to_geojson(*query_bbox))
+            def tile_progress(done, total):
+                _set_step(job, "footprints", "running", note=f"{done}/{total} Overpass tiles")
+
+            source_fc = fetch_osm_buildings(bbox_to_geojson(*query_bbox), progress=tile_progress)
             if not source_fc["features"]:
                 raise LidarExtractionError("no OSM buildings found for this area")
         else:

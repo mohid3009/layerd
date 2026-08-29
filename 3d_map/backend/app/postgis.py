@@ -16,6 +16,7 @@ import os
 from contextlib import contextmanager
 
 import psycopg2
+import psycopg2.extras
 
 DSN = os.environ.get("POSTGRES_DSN", "postgresql://postgres:postgres@localhost:5432/layerd")
 
@@ -173,12 +174,14 @@ def save_buildings(featurecollection, session_id, label=None, mode=None, crs=Non
     save_session(session_id, label=label, mode=mode, crs=crs)
     with _conn() as conn:
         with conn.cursor() as cur:
-            for f in features:
-                row = _row_from_feature(f, session_id)
-                if not row["building_id"] or not row["geom"]:
-                    continue
-                cur.execute(UPSERT, row)
-            if reconcile and features:
+            rows = [
+                _row_from_feature(f, session_id)
+                for f in features
+                if f.get("properties", {}).get("building_id") and f.get("geometry")
+            ]
+            if rows:
+                psycopg2.extras.execute_batch(cur, UPSERT, rows, page_size=1000)
+            if reconcile and rows:
                 ids = [
                     f["properties"]["building_id"]
                     for f in features
