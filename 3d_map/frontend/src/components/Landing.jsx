@@ -1,6 +1,8 @@
-import React, { createContext, useContext, useEffect, useRef, useState } from 'react'
+import React, { createContext, useContext, useEffect, useRef, useState, Suspense, lazy } from 'react'
 import { motion, useScroll, useTransform, useInView, animate } from 'framer-motion'
-import HeroGlobe from './HeroGlobe.jsx'
+
+// three.js + drei (~1 MB) load only when the globe actually renders
+const HeroGlobe = lazy(() => import('./HeroGlobe.jsx'))
 
 const LandCtx = createContext(null)
 
@@ -137,7 +139,11 @@ function Hero({ onEnter }) {
   return (
     <header className="relative min-h-screen flex items-center justify-center overflow-hidden">
       <div className="hero-halo" />
-      <div className="hero-globe" aria-hidden="true"><HeroGlobe /></div>
+      <div className="hero-globe" aria-hidden="true">
+        <Suspense fallback={<div className="hero-globe-loading" />}>
+          <HeroGlobe />
+        </Suspense>
+      </div>
       <motion.div
         className="relative z-10 flex flex-col items-center text-center px-6 pt-16"
         initial={{ opacity: 0, y: 26 }}

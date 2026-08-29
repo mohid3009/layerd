@@ -1,16 +1,21 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react'
 import { Navigate, NavLink, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom'
 import { getParcels, getParcel, getSavedBuildings, getSavedStatus } from './api.js'
 import Landing from './components/Landing.jsx'
 import Login from './components/Login.jsx'
-import ParcelMap from './components/ParcelMap.jsx'
-import Building3D from './components/Building3D.jsx'
 import UnitPanel from './components/UnitPanel.jsx'
 import SurveyorPanel from './components/SurveyorPanel.jsx'
 import RegistrarPanel from './components/RegistrarPanel.jsx'
 import LedgerView from './components/LedgerView.jsx'
 import NgdrsModal from './components/NgdrsModal.jsx'
-import LidarMap from './components/LidarMap.jsx'
+
+// heavy libs (maplibre ~800 KB, three + drei ~1 MB) load only on the pages /
+// views that actually need them
+const ParcelMap = lazy(() => import('./components/ParcelMap.jsx'))
+const Building3D = lazy(() => import('./components/Building3D.jsx'))
+const LidarMap = lazy(() => import('./components/LidarMap.jsx'))
+
+const PageFallback = () => <div className="loading muted">loading…</div>
 
 const ROLE_LABELS = { citizen: 'Citizen', surveyor: 'Surveyor', registrar: 'Registrar' }
 const SESSION_KEY = 'layerd-session'
@@ -111,7 +116,9 @@ function LidarPage({ session, onLogout }) {
   return (
     <div className="app">
       <Topbar session={session} onLogout={onLogout} />
-      <LidarMap />
+      <Suspense fallback={<PageFallback />}>
+        <LidarMap />
+      </Suspense>
     </div>
   )
 }
@@ -247,20 +254,24 @@ function Dashboard({ session, onLogout }) {
               {parcel.has_vertical_structure && !view3d && <span className="badge-flag">⚑ this parcel has 3D vertical units</span>}
             </div>
             {!view3d ? (
-              <ParcelMap
-                parcels={parcels}
-                selectedUlpin={selectedUlpin}
-                onSelect={setSelectedUlpin}
-                lidarFeatures={lidarShow ? (lidarFC?.features ?? []) : null}
-              />
+              <Suspense fallback={<PageFallback />}>
+                <ParcelMap
+                  parcels={parcels}
+                  selectedUlpin={selectedUlpin}
+                  onSelect={setSelectedUlpin}
+                  lidarFeatures={lidarShow ? (lidarFC?.features ?? []) : null}
+                />
+              </Suspense>
             ) : (
-              <Building3D
-                parcel={parcel}
-                units={parcel.units || []}
-                selected={selectedUnit}
-                conflictIds={conflicts}
-                onSelect={setSelectedUnit}
-              />
+              <Suspense fallback={<PageFallback />}>
+                <Building3D
+                  parcel={parcel}
+                  units={parcel.units || []}
+                  selected={selectedUnit}
+                  conflictIds={conflicts}
+                  onSelect={setSelectedUnit}
+                />
+              </Suspense>
             )}
             <div className="legend">
               <span><i style={{ background: '#4da3ff' }} /> owned</span>
