@@ -1,5 +1,30 @@
 # 3D ULPIN — Run Instructions
 
+## PostgreSQL + PostGIS (generated buildings)
+
+Generation results (and manual edits) are persisted to PostGIS and shown on the main
+dashboard. Setup (one-time, already done on this machine):
+
+```powershell
+# creates the 'layerd' DB + postgis extension (uses local PostgreSQL 16, user postgres)
+python setup_db.py
+```
+
+- DSN: default `postgresql://postgres:postgres@localhost:5432/layerd`, override with the
+  `POSTGRES_DSN` env var
+- table `lidar_buildings`: `geometry(Polygon,4326)` + GIST index, heights/stories/sources,
+  full property JSONB
+- the pipeline saves automatically as its final step ("Saving to PostGIS"); manual edits in
+  the LiDAR view auto-sync (debounced), and `POST /lidar/buildings/sync` reconciles the
+  table with the edited set (deletes removed buildings)
+- if PostGIS is down, extraction still works — the save step shows an error and the stats
+  carry a warning
+
+Dashboard: the **"LiDAR buildings (N)"** toggle in the view toolbar renders the saved set
+as green extrusions on the parcels map (fetched from `GET /lidar/buildings`).
+
+---
+
 ## LiDAR mode (real-data pipeline)
 
 Log in, then click **LiDAR scan** in the topbar. Upload a `.laz` point cloud **with its CRS

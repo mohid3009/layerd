@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Map as MapLibreMap, NavigationControl } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import { getExtractionStatus, startExtraction } from '../api.js'
+import { getExtractionStatus, getSavedStatus, startExtraction, syncSavedBuildings } from '../api.js'
 
 // Keyless tile providers (same set as ParcelMap — no {r} placeholder).
 const TILES = {
@@ -37,6 +37,7 @@ export default function LidarMap() {
   const [drawMode, setDrawMode] = useState(false)
   const [tileStyle, setTileStyle] = useState('satellite')
   const [job, setJob] = useState(null) // { state, steps, error, result }
+  const [postgisMsg, setPostgisMsg] = useState(null)
 
   const containerRef = useRef(null)
   const mapRef = useRef(null)
@@ -48,6 +49,8 @@ export default function LidarMap() {
   const drawPtsRef = useRef([]) // committed freeform vertices [lng, lat]
   const firstPixRef = useRef(null) // pixel pos of first vertex (click-to-close)
   const finishFreeformRef = useRef(() => {})
+  const dirtyRef = useRef(false) // unsaved manual edits?
+  const syncTimerRef = useRef(null)
   const floorHRef = useRef(3.0)
   const addBuildingRef = useRef(() => {})
 
@@ -88,6 +91,8 @@ export default function LidarMap() {
     setSelectedId(null)
     setEditing(false)
     setDrawMode(false)
+    dirtyRef.current = false
+    setPostgisMsg(null)
     setJob({
       state: 'running',
       error: null,
@@ -100,6 +105,7 @@ export default function LidarMap() {
           state: 'pending',
         },
         { key: 'measure', label: 'Measuring heights from LiDAR', state: 'pending' },
+        { key: 'save', label: 'Saving to PostGIS', state: 'pending' },
       ],
     })
     try {
@@ -145,14 +151,36 @@ export default function LidarMap() {
     }
   }
 
+  const markDirty = () => { dirtyRef.current = true }
+
+  // auto-sync manual edits to PostGIS (debounced)
+  useEffect(() => {
+    if (!dirtyRef.current) return
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
+    syncTimerRef.current = setTimeout(async () => {
+      try {
+        const r = await syncSavedBuildings({
+          type: 'FeatureCollection',
+          features: featuresRef.current,
+        })
+        dirtyRef.current = false
+        setPostgisMsg(`saved to PostGIS (${r.count} buildings)`)
+      } catch (e) {
+        setPostgisMsg(`PostGIS sync failed: ${e.message}`)
+      }
+    }, 1200)
+  }, [features])
+
   useEffect(() => () => {
     if (pollRef.current) clearInterval(pollRef.current)
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
   }, [])
 
   // ── Manual building editing ────────────────────────────────────────────────
   const addManualPolygon = (ring) => {
     const id = `manual-${Date.now()}`
     const h = floorHRef.current
+    markDirty()
     setFeatures((prev) => [
       ...prev,
       {
@@ -192,6 +220,7 @@ export default function LidarMap() {
   const saveEdit = () => {
     const stories = Math.max(1, parseInt(draft?.floors) || 1)
     const h = Math.max(0.5, parseFloat(draft?.height) || stories * floorHRef.current)
+    markDirty()
     setFeatures((prev) =>
       prev.map((f) => {
         if (f.properties.building_id !== selectedId) return f
@@ -219,6 +248,7 @@ export default function LidarMap() {
   const resetBuilding = () => {
     const orig = originalsRef.current.get(selectedId)
     if (!orig) return
+    markDirty()
     setFeatures((prev) =>
       prev.map((f) =>
         f.properties.building_id === selectedId ? JSON.parse(JSON.stringify(orig)) : f,
@@ -229,6 +259,7 @@ export default function LidarMap() {
   }
 
   const deleteBuilding = () => {
+    markDirty()
     setFeatures((prev) => prev.filter((f) => f.properties.building_id !== selectedId))
     setSelectedId(null)
     setEditing(false)
@@ -236,6 +267,7 @@ export default function LidarMap() {
   }
 
   const resetAll = () => {
+    markDirty()
     setFeatures([...originalsRef.current.values()].map((f) => JSON.parse(JSON.stringify(f))))
     setSelectedId(null)
     setEditing(false)
@@ -567,8 +599,10 @@ export default function LidarMap() {
                 <tr><td>tallest</td><td>{stats.max_height_m} m</td></tr>
                 <tr><td>mean height</td><td>{stats.mean_height_m} m</td></tr>
                 <tr><td>storey height</td><td>{stats.floor_height_m} m</td></tr>
+                <tr><td>PostGIS</td><td>{postgisMsg ?? (stats.postgis_saved != null ? `saved (${stats.postgis_saved})` : '—')}</td></tr>
               </tbody>
             </table>
+            {stats.postgis_warning && <div className="error">{stats.postgis_warning}</div>}
             <div className="btn-row">
               <button className="btn" onClick={resetAll} disabled={!editedCount && features.length === originalsRef.current.size}>
                 reset all edits

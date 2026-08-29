@@ -83,6 +83,12 @@ def startup():
         if conn.execute("SELECT COUNT(*) AS n FROM parcels").fetchone()["n"] == 0:
             from .seed import seed
             seed(conn)
+    try:
+        from .postgis import init_postgis
+        init_postgis()
+        print("[startup] PostGIS ready")
+    except Exception as e:  # PostGIS is optional — the app works without it
+        print(f"[startup] PostGIS unavailable ({e}) — LiDAR persistence disabled")
 
 
 # ---------------- Parcels ----------------
@@ -592,6 +598,46 @@ def extraction_status(job_id: str):
         "error": job["error"],
         "result": job["result"],
     }
+
+
+# ---------------- PostGIS persistence (saved buildings) ----------------
+
+@app.get("/lidar/buildings/status")
+def lidar_saved_status():
+    from .postgis import count_buildings, is_available
+    if not is_available():
+        return {"available": False, "count": 0}
+    return {"available": True, "count": count_buildings()}
+
+
+@app.get("/lidar/buildings")
+def lidar_saved_buildings():
+    """All saved buildings as GeoJSON straight from PostGIS."""
+    from .postgis import fetch_buildings, is_available
+    if not is_available():
+        raise HTTPException(503, "PostGIS is not available")
+    return fetch_buildings()
+
+
+@app.post("/lidar/buildings/sync")
+def lidar_sync_buildings(payload: dict = Body(...)):
+    """
+    Persist the (possibly manually edited) working set: upserts every feature
+    and deletes rows missing from the payload, so PostGIS mirrors the editor.
+    """
+    from .postgis import save_buildings
+    fc = payload.get("buildings")
+    if not isinstance(fc, dict) or fc.get("type") != "FeatureCollection":
+        raise HTTPException(400, "body must contain a FeatureCollection under 'buildings'")
+    count = save_buildings(fc, job_id=payload.get("job_id"), reconcile=True)
+    return {"status": "ok", "count": count}
+
+
+@app.post("/lidar/buildings/clear")
+def lidar_clear_buildings():
+    from .postgis import clear_buildings
+    clear_buildings()
+    return {"status": "cleared"}
 
 
 # ---------------- Mock NGDRS handoff ----------------

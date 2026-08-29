@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { getParcels, getParcel } from './api.js'
+import { getParcels, getParcel, getSavedBuildings, getSavedStatus } from './api.js'
 import Landing from './components/Landing.jsx'
 import Login from './components/Login.jsx'
 import ParcelMap from './components/ParcelMap.jsx'
@@ -26,6 +26,9 @@ export default function App() {
   const [search, setSearch] = useState('')
   const [showNgdrs, setShowNgdrs] = useState(false)
   const [mode, setMode] = useState('parcels') // 'parcels' | 'lidar'
+  const [lidarShow, setLidarShow] = useState(false)
+  const [lidarFC, setLidarFC] = useState(null)
+  const [lidarCount, setLidarCount] = useState(null)
 
   const role = session?.role ?? null
 
@@ -37,8 +40,21 @@ export default function App() {
         if (!selectedUlpin && ps.length) setSelectedUlpin(ps[0].ulpin)
       })
       .catch((e) => console.error(e))
+    getSavedStatus()
+      .then((s) => setLidarCount(s.available ? s.count : null))
+      .catch(() => setLidarCount(null))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session])
+
+  const toggleLidarBuildings = () => {
+    const next = !lidarShow
+    setLidarShow(next)
+    if (next && !lidarFC) {
+      getSavedBuildings()
+        .then(setLidarFC)
+        .catch((e) => console.error('LiDAR buildings fetch failed:', e))
+    }
+  }
 
   const refreshParcel = useCallback(() => {
     if (!selectedUlpin || !role) return
@@ -166,10 +182,22 @@ export default function App() {
               >
                 3D building{parcel.has_vertical_structure ? '' : ' (unavailable)'}
               </button>
+              <button
+                className={`btn ${lidarShow ? 'primary' : ''}`}
+                onClick={toggleLidarBuildings}
+                title="show buildings generated from the LiDAR scan (stored in PostGIS)"
+              >
+                LiDAR buildings{lidarCount != null ? ` (${lidarCount})` : ''}
+              </button>
               {parcel.has_vertical_structure && !view3d && <span className="badge-flag">⚑ this parcel has 3D vertical units</span>}
             </div>
             {!view3d ? (
-              <ParcelMap parcels={parcels} selectedUlpin={selectedUlpin} onSelect={setSelectedUlpin} />
+              <ParcelMap
+                parcels={parcels}
+                selectedUlpin={selectedUlpin}
+                onSelect={setSelectedUlpin}
+                lidarFeatures={lidarShow ? (lidarFC?.features ?? []) : null}
+              />
             ) : (
               <Building3D
                 parcel={parcel}
@@ -185,6 +213,7 @@ export default function App() {
               <span><i style={{ background: '#8f9aa8' }} /> common</span>
               <span><i style={{ background: '#b07aff' }} /> air-rights</span>
               <span><i style={{ background: '#ff4d4d' }} /> conflict</span>
+              {lidarShow && <span><i style={{ background: '#2fbf8f' }} /> LiDAR buildings</span>}
             </div>
           </section>
 

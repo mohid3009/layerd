@@ -20,12 +20,13 @@ import uuid
 _lock = threading.Lock()
 JOBS = {}
 
-STEP_KEYS = ("load", "reproject", "footprints", "measure")
+STEP_KEYS = ("load", "reproject", "footprints", "measure", "save")
 STEP_LABELS = {
     "load": "Reading LiDAR point cloud",
     "reproject": "Reprojecting to WGS84",
     "footprints": "Fetching building footprints",
     "measure": "Measuring heights from LiDAR",
+    "save": "Saving to PostGIS",
 }
 
 JOB_TTL_SECONDS = 3600
@@ -127,6 +128,21 @@ def run_extraction(job, mode, laz_bytes, footprints_bytes, bbox, bbox_crs, epsg,
         if mode == "osm":
             stats["osm_buildings_fetched"] = len(source_fc["features"])
             stats["query_bbox_wgs84"] = [round(v, 6) for v in query_bbox]
+
+        # ── step 5: persist to PostGIS (non-fatal — DB may be unavailable) ──
+        _set_step(job, "save", "running")
+        postgis_warning = None
+        try:
+            from .postgis import save_buildings
+
+            stats["postgis_saved"] = save_buildings(fc, job_id=job["job_id"])
+        except Exception as e:  # noqa: BLE001 — degrade gracefully, keep result
+            _set_step(job, "save", "error")
+            postgis_warning = f"PostGIS save failed: {e}"
+        else:
+            _set_step(job, "save", "done")
+        if postgis_warning:
+            stats["postgis_warning"] = postgis_warning
 
         with _lock:
             job["state"] = "done"

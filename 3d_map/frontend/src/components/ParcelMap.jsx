@@ -62,6 +62,10 @@ const INITIAL_STYLE = {
       type: 'geojson',
       data: { type: 'FeatureCollection', features: [] },
     },
+    lidar: {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] },
+    },
   },
   layers: [
     // ── Base map tiles (one layer per provider, toggled via visibility) ─────
@@ -121,6 +125,31 @@ const INITIAL_STYLE = {
         'text-halo-width': 1.8,
       },
     },
+
+    // ── LiDAR-generated buildings (PostGIS) — hidden until toggled on ───────
+    {
+      id: 'lidar-extrude',
+      type: 'fill-extrusion',
+      source: 'lidar',
+      layout: { visibility: 'none' },
+      paint: {
+        'fill-extrusion-color': ['get', 'color'],
+        'fill-extrusion-height': ['get', 'height_m'],
+        'fill-extrusion-base': 0,
+        'fill-extrusion-opacity': 0.8,
+      },
+    },
+    {
+      id: 'lidar-line',
+      type: 'line',
+      source: 'lidar',
+      layout: { visibility: 'none' },
+      paint: {
+        'line-color': '#2fbf8f',
+        'line-width': 1,
+        'line-opacity': 0.6,
+      },
+    },
   ],
 }
 
@@ -169,7 +198,7 @@ function makeGeoJSON(parcels, selectedUlpin) {
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
-export default function ParcelMap({ parcels, selectedUlpin, onSelect }) {
+export default function ParcelMap({ parcels, selectedUlpin, onSelect, lidarFeatures }) {
   const containerRef = useRef(null)
   const mapRef       = useRef(null)
   const loadedRef    = useRef(false)
@@ -240,6 +269,22 @@ export default function ParcelMap({ parcels, selectedUlpin, onSelect }) {
   useEffect(() => {
     mapRef.current?.easeTo({ pitch: pitch3d ? 55 : 0, duration: 700 })
   }, [pitch3d])
+
+  // ── LiDAR buildings saved in PostGIS ──────────────────────────────────────
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !loadedRef.current || !lidarFeatures) return
+    map.getSource('lidar')?.setData({ type: 'FeatureCollection', features: lidarFeatures })
+  }, [lidarFeatures])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !loadedRef.current) return
+    const vis = lidarFeatures && lidarFeatures.length ? 'visible' : 'none'
+    for (const id of ['lidar-extrude', 'lidar-line']) {
+      map.setLayoutProperty(id, 'visibility', vis)
+    }
+  }, [lidarFeatures])
 
   // ── Update parcels / fly on selection change ──────────────────────────────
   const firstDataRef = useRef(true)

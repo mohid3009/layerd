@@ -49,6 +49,10 @@ export const startExtraction = (lazFile, { mode, bbox, bboxCrs, footprintsFile, 
   return req('/lidar/extract/start', { method: 'POST', body: fd })
 }
 export const getExtractionStatus = (jobId) => req(`/lidar/extract/${jobId}`)
+export const getSavedBuildings = () => req('/lidar/buildings')
+export const getSavedStatus = () => req('/lidar/buildings/status')
+export const syncSavedBuildings = (fc) =>
+  req('/lidar/buildings/sync', { method: 'POST', body: JSON.stringify({ buildings: fc }) })
 
 export function footprintBbox(footprintGeoJson) {
   const ring = footprintGeoJson.coordinates[0]
