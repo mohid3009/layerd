@@ -25,8 +25,12 @@ then rendered on a MapLibre map with `fill-extrusion` (blue = LiDAR-measured, or
   updates live and the building turns green
 - **reset** — restore that building's original LiDAR-measured values
 - **delete** — remove a building
-- **+ add building** (map toolbar) — click two opposite corners on the map to draw a new
-  footprint; it starts at 1 storey and is immediately editable
+- **+ add building** (map toolbar) — draw a **freeform footprint**: click each corner
+  (rubber-band preview while drawing), then close it by clicking back on the first point,
+  double-clicking, or pressing **Enter** (**Esc** cancels). It starts at 1 storey and is
+  immediately editable
+- **edit** lets you set the **number of floors** directly (height auto-syncs as
+  floors × storey height) or type an exact height in metres
 - **reset all edits** / **download GeoJSON** — export the edited set as
   `buildings_edited.geojson`
 

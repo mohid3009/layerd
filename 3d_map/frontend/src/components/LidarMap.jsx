@@ -45,7 +45,9 @@ export default function LidarMap() {
   const featuresRef = useRef([])
   const originalsRef = useRef(new Map()) // building_id -> original feature
   const drawModeRef = useRef(false)
-  const drawStartRef = useRef(null)
+  const drawPtsRef = useRef([]) // committed freeform vertices [lng, lat]
+  const firstPixRef = useRef(null) // pixel pos of first vertex (click-to-close)
+  const finishFreeformRef = useRef(() => {})
   const floorHRef = useRef(3.0)
   const addBuildingRef = useRef(() => {})
 
@@ -148,7 +150,7 @@ export default function LidarMap() {
   }, [])
 
   // ── Manual building editing ────────────────────────────────────────────────
-  const addManualBuilding = (x0, y0, x1, y1) => {
+  const addManualPolygon = (ring) => {
     const id = `manual-${Date.now()}`
     const h = floorHRef.current
     setFeatures((prev) => [
@@ -166,22 +168,30 @@ export default function LidarMap() {
           height_source: 'manual',
           color: '#2fbf8f',
         },
-        geometry: {
-          type: 'Polygon',
-          coordinates: [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]],
-        },
+        geometry: { type: 'Polygon', coordinates: [ring] },
       },
     ])
     setSelectedId(id)
-    setDraft({ height: h })
+    setDraft({ height: h, floors: 1 })
     setEditing(true)
     setDrawMode(false)
   }
-  addBuildingRef.current = addManualBuilding
+  addBuildingRef.current = addManualPolygon
+
+  const finishFreeform = () => {
+    const pts = drawPtsRef.current
+    if (pts.length < 3) return
+    const ring = [...pts, pts[0]]
+    drawPtsRef.current = []
+    firstPixRef.current = null
+    mapRef.current?.getSource('draft')?.setData(EMPTY_FC)
+    addBuildingRef.current(ring)
+  }
+  finishFreeformRef.current = finishFreeform
 
   const saveEdit = () => {
-    const h = Math.max(0.5, parseFloat(draft?.height) || 0)
-    const stories = Math.max(1, Math.round(h / floorHRef.current))
+    const stories = Math.max(1, parseInt(draft?.floors) || 1)
+    const h = Math.max(0.5, parseFloat(draft?.height) || stories * floorHRef.current)
     setFeatures((prev) =>
       prev.map((f) => {
         if (f.properties.building_id !== selectedId) return f
@@ -253,16 +263,20 @@ export default function LidarMap() {
     map.getSource('buildings')?.setData({ type: 'FeatureCollection', features })
   }, [features])
 
-  // draw-mode bookkeeping (cursor, cancel pending first corner)
+  // draw-mode bookkeeping (cursor, dblclick-zoom, cancel pending shape)
   useEffect(() => {
     drawModeRef.current = drawMode
     const map = mapRef.current
-    if (!drawMode) {
-      drawStartRef.current = null
-      map?.getSource('draft')?.setData(EMPTY_FC)
-      if (map) map.getCanvas().style.cursor = ''
-    } else if (map) {
+    if (!map) return
+    if (drawMode) {
+      map.doubleClickZoom.disable()
       map.getCanvas().style.cursor = 'crosshair'
+    } else {
+      drawPtsRef.current = []
+      firstPixRef.current = null
+      map.getSource('draft')?.setData(EMPTY_FC)
+      map.doubleClickZoom.enable()
+      map.getCanvas().style.cursor = ''
     }
   }, [drawMode])
 
@@ -270,6 +284,7 @@ export default function LidarMap() {
     if (!drawMode) return
     const onKey = (e) => {
       if (e.key === 'Escape') setDrawMode(false)
+      if (e.key === 'Enter') finishFreeformRef.current()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -343,35 +358,52 @@ export default function LidarMap() {
       if (!drawModeRef.current) map.getCanvas().style.cursor = ''
     })
 
-    // manual footprint drawing: click two opposite corners
+    // freeform footprint drawing: click vertices, close via first point /
+    // double-click / Enter; rubber-band line + fill preview while drawing
+    const updateDraft = (cursor) => {
+      const pts = drawPtsRef.current
+      const feats = []
+      if (pts.length) {
+        feats.push({
+          type: 'Feature',
+          properties: { kind: 'line' },
+          geometry: { type: 'LineString', coordinates: cursor ? [...pts, cursor] : [...pts] },
+        })
+      }
+      if (pts.length >= 2) {
+        const ring = cursor ? [...pts, cursor, pts[0]] : [...pts, pts[0]]
+        feats.push({
+          type: 'Feature',
+          properties: { kind: 'poly' },
+          geometry: { type: 'Polygon', coordinates: [ring] },
+        })
+      }
+      map.getSource('draft')?.setData({ type: 'FeatureCollection', features: feats })
+    }
+
     map.on('click', (e) => {
       if (!drawModeRef.current) return
-      const ll = [e.lngLat.lng, e.lngLat.lat]
-      if (!drawStartRef.current) {
-        drawStartRef.current = ll
-      } else {
-        const [x0, y0] = drawStartRef.current
-        drawStartRef.current = null
-        map.getSource('draft')?.setData(EMPTY_FC)
-        addBuildingRef.current(
-          Math.min(x0, ll[0]), Math.min(y0, ll[1]),
-          Math.max(x0, ll[0]), Math.max(y0, ll[1]),
-        )
+      const pts = drawPtsRef.current
+      // clicking back on the first vertex closes the shape
+      if (pts.length >= 3 && firstPixRef.current && e.point.dist(firstPixRef.current) < 12) {
+        finishFreeformRef.current()
+        return
       }
+      pts.push([e.lngLat.lng, e.lngLat.lat])
+      if (pts.length === 1) firstPixRef.current = e.point
+      updateDraft([e.lngLat.lng, e.lngLat.lat])
     })
     map.on('mousemove', (e) => {
-      if (!drawModeRef.current || !drawStartRef.current) return
-      const [x0, y0] = drawStartRef.current
-      const x1 = e.lngLat.lng
-      const y1 = e.lngLat.lat
-      map.getSource('draft')?.setData({
-        type: 'FeatureCollection',
-        features: [{
-          type: 'Feature',
-          properties: {},
-          geometry: { type: 'Polygon', coordinates: [[[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]] },
-        }],
-      })
+      if (!drawModeRef.current || !drawPtsRef.current.length) return
+      updateDraft([e.lngLat.lng, e.lngLat.lat])
+    })
+    map.on('dblclick', (e) => {
+      if (!drawModeRef.current) return
+      e.preventDefault()
+      // the two clicks of the double-click were added as vertices — drop them
+      drawPtsRef.current.length = Math.max(0, drawPtsRef.current.length - 2)
+      updateDraft(null)
+      finishFreeformRef.current()
     })
 
     mapRef.current = map
@@ -402,9 +434,9 @@ export default function LidarMap() {
               <button
                 className={`btn ${drawMode ? 'primary' : ''}`}
                 onClick={() => setDrawMode((v) => !v)}
-                title={drawMode ? 'click two opposite corners on the map · Esc cancels' : 'draw a new footprint by clicking two opposite corners'}
+                title={drawMode ? 'click to add corners · close by clicking the first point, double-clicking, or pressing Enter · Esc cancels' : 'draw a freeform footprint by clicking its corners'}
               >
-                {drawMode ? 'pick 2 corners…' : '+ add building'}
+                {drawMode ? 'drawing… (dblclick / Enter to finish)' : '+ add building'}
               </button>
             </div>
             <div ref={containerRef} className="maplibre-map" />
@@ -554,20 +586,32 @@ export default function LidarMap() {
             {editing ? (
               <div className="edit-form">
                 <label>
+                  <span>floors (storeys)</span>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    autoFocus
+                    value={draft.floors}
+                    onChange={(e) => {
+                      const fl = Math.max(1, parseInt(e.target.value) || 1)
+                      setDraft({ floors: fl, height: +(fl * floorH).toFixed(2) })
+                    }}
+                  />
+                </label>
+                <label>
                   <span>height (m)</span>
                   <input
                     type="number"
                     step="0.1"
                     min="0.5"
-                    autoFocus
                     value={draft.height}
-                    onChange={(e) => setDraft({ ...draft, height: e.target.value })}
+                    onChange={(e) => {
+                      const h = parseFloat(e.target.value) || 0
+                      setDraft({ height: e.target.value, floors: Math.max(1, Math.round(h / floorH)) })
+                    }}
                   />
                 </label>
-                <span className="muted tiny">
-                  storeys (auto at {floorH} m each):{' '}
-                  {Math.max(1, Math.round((parseFloat(draft.height) || 0) / floorH))}
-                </span>
                 <div className="btn-row">
                   <button className="btn primary" onClick={saveEdit}>save</button>
                   <button className="btn" onClick={() => { setEditing(false); setDraft(null) }}>cancel</button>
@@ -588,7 +632,7 @@ export default function LidarMap() {
                   </tbody>
                 </table>
                 <div className="btn-row">
-                  <button className="btn primary" onClick={() => { setDraft({ height: selected.height_m }); setEditing(true) }}>
+                  <button className="btn primary" onClick={() => { setDraft({ height: selected.height_m, floors: selected.stories }); setEditing(true) }}>
                     edit
                   </button>
                   {originalsRef.current.has(selectedId) && (
