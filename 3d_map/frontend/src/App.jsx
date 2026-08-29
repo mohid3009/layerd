@@ -1,18 +1,12 @@
-import React, { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react'
+import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react'
 import { Navigate, NavLink, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom'
-import { getParcels, getParcel, getSavedBuildings, getSavedStatus } from './api.js'
+import { getSavedBuildings } from './api.js'
 import Landing from './components/Landing.jsx'
 import Login from './components/Login.jsx'
-import UnitPanel from './components/UnitPanel.jsx'
-import SurveyorPanel from './components/SurveyorPanel.jsx'
-import RegistrarPanel from './components/RegistrarPanel.jsx'
-import LedgerView from './components/LedgerView.jsx'
-import NgdrsModal from './components/NgdrsModal.jsx'
+import BuildingsMap from './components/BuildingsMap.jsx'
 
 // heavy libs (maplibre ~800 KB, three + drei ~1 MB) load only on the pages /
 // views that actually need them
-const ParcelMap = lazy(() => import('./components/ParcelMap.jsx'))
-const Building3D = lazy(() => import('./components/Building3D.jsx'))
 const LidarMap = lazy(() => import('./components/LidarMap.jsx'))
 
 const PageFallback = () => <div className="loading muted">loading…</div>
@@ -112,6 +106,134 @@ function Topbar({ session, onLogout, children }) {
   )
 }
 
+function Dashboard({ session, onLogout }) {
+  const [state, setState] = useState('loading') // loading | ready | empty | unavailable
+  const [features, setFeatures] = useState([])
+  const [selectedId, setSelectedId] = useState(null)
+  const [reloadKey, setReloadKey] = useState(0)
+
+  useEffect(() => {
+    let cancelled = false
+    setState('loading')
+    getSavedBuildings()
+      .then((fc) => {
+        if (cancelled) return
+        setFeatures(fc.features || [])
+        setState(fc.features?.length ? 'ready' : 'empty')
+      })
+      .catch(() => {
+        if (cancelled) return
+        setFeatures([])
+        setState('unavailable')
+      })
+    return () => { cancelled = true }
+  }, [reloadKey])
+
+  const selected = useMemo(
+    () => features.find((f) => f.properties.building_id === selectedId)?.properties ?? null,
+    [features, selectedId],
+  )
+
+  const stats = useMemo(() => {
+    const n = features.length
+    if (!n) return null
+    const fromLidar = features.filter((f) => f.properties.height_source === 'lidar').length
+    const assumed = features.filter((f) => f.properties.height_source === 'assumed-1-story').length
+    const edited = features.filter((f) => ['edited', 'manual'].includes(f.properties.height_source)).length
+    const heights = features.map((f) => f.properties.height_m || 0)
+    return {
+      n,
+      fromLidar,
+      assumed,
+      edited,
+      tallest: Math.max(...heights),
+      mean: heights.reduce((a, b) => a + b, 0) / n,
+    }
+  }, [features])
+
+  return (
+    <div className="app">
+      <Topbar session={session} onLogout={onLogout} />
+
+      <div className="parcel-strip">
+        <span className="muted tiny">
+          buildings from saved LiDAR scans — pan the map anywhere, or run a new scan
+        </span>
+        <span style={{ flex: 1 }} />
+        {state === 'ready' && (
+          <span className="mono tiny">{stats.n} buildings · tallest {stats.tallest} m</span>
+        )}
+        <button className="btn" onClick={() => setReloadKey((k) => k + 1)}>refresh</button>
+        <NavLink to="/lidar" className="btn">new scan</NavLink>
+      </div>
+
+      <main className="workspace">
+        <section className="viewport">
+          {state === 'ready' && (
+            <BuildingsMap features={features} selectedId={selectedId} onSelect={setSelectedId} />
+          )}
+          {state === 'loading' && <div className="loading muted">loading saved buildings…</div>}
+          {state === 'empty' && (
+            <div className="lidar-empty muted">
+              <h3>No buildings yet</h3>
+              <p>run a LiDAR scan to generate building footprints and heights — they will appear here, stored in PostGIS.</p>
+              <NavLink to="/lidar" className="btn primary">open LiDAR scan</NavLink>
+            </div>
+          )}
+          {state === 'unavailable' && (
+            <div className="lidar-empty muted">
+              <h3>PostGIS unavailable</h3>
+              <p>start PostgreSQL and refresh — saved buildings live in the <span className="mono">layerd</span> database.</p>
+              <button className="btn" onClick={() => setReloadKey((k) => k + 1)}>retry</button>
+            </div>
+          )}
+        </section>
+
+        <aside className="sidebar">
+          <div className="panel-section">
+            <h3>saved buildings</h3>
+            {stats ? (
+              <table className="kv">
+                <tbody>
+                  <tr><td>buildings</td><td>{stats.n}</td></tr>
+                  <tr><td>from LiDAR</td><td>{stats.fromLidar}</td></tr>
+                  <tr><td>assumed 1 storey</td><td>{stats.assumed}</td></tr>
+                  <tr><td>edited / manual</td><td>{stats.edited}</td></tr>
+                  <tr><td>tallest</td><td>{stats.tallest} m</td></tr>
+                  <tr><td>mean height</td><td>{stats.mean.toFixed(1)} m</td></tr>
+                </tbody>
+              </table>
+            ) : (
+              <p className="muted tiny">nothing saved yet</p>
+            )}
+            <p className="muted tiny" style={{ marginTop: 10 }}>
+              data lives in PostgreSQL/PostGIS (<span className="mono">layerd.lidar_buildings</span>) — click any building on the map for details.
+            </p>
+          </div>
+
+          {selected && (
+            <div className="panel-section">
+              <h3>building details</h3>
+              <table className="kv">
+                <tbody>
+                  <tr><td>id</td><td className="mono">{selected.building_id}</td></tr>
+                  {selected.name && <tr><td>name</td><td>{selected.name}</td></tr>}
+                  <tr><td>height</td><td>{selected.height_m} m</td></tr>
+                  <tr><td>storeys</td><td>{selected.stories}</td></tr>
+                  <tr><td>ground Z</td><td>{selected.ground_z ?? '—'}</td></tr>
+                  <tr><td>roof Z</td><td>{selected.roof_z ?? '—'}</td></tr>
+                  <tr><td>LiDAR points</td><td>{selected.lidar_points}</td></tr>
+                  <tr><td>source</td><td>{selected.height_source}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+        </aside>
+      </main>
+    </div>
+  )
+}
+
 function LidarPage({ session, onLogout }) {
   return (
     <div className="app">
@@ -119,224 +241,6 @@ function LidarPage({ session, onLogout }) {
       <Suspense fallback={<PageFallback />}>
         <LidarMap />
       </Suspense>
-    </div>
-  )
-}
-
-function Dashboard({ session, onLogout }) {
-  const [parcels, setParcels] = useState([])
-  const [selectedUlpin, setSelectedUlpin] = useState(null)
-  const [parcel, setParcel] = useState(null)
-  const [view3d, setView3d] = useState(false)
-  const [selectedUnit, setSelectedUnit] = useState(null)
-  const [conflicts, setConflicts] = useState(new Set())
-  const [search, setSearch] = useState('')
-  const [showNgdrs, setShowNgdrs] = useState(false)
-  const [lidarShow, setLidarShow] = useState(false)
-  const [lidarFC, setLidarFC] = useState(null)
-  const [lidarCount, setLidarCount] = useState(null)
-
-  const role = session?.role ?? null
-
-  useEffect(() => {
-    getParcels()
-      .then((ps) => {
-        setParcels(ps)
-        if (!selectedUlpin && ps.length) setSelectedUlpin(ps[0].ulpin)
-      })
-      .catch((e) => console.error(e))
-    getSavedStatus()
-      .then((s) => setLidarCount(s.available ? s.count : null))
-      .catch(() => setLidarCount(null))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  const toggleLidarBuildings = () => {
-    const next = !lidarShow
-    setLidarShow(next)
-    if (next && !lidarFC) {
-      getSavedBuildings()
-        .then(setLidarFC)
-        .catch((e) => console.error('LiDAR buildings fetch failed:', e))
-    }
-  }
-
-  const refreshParcel = useCallback(() => {
-    if (!selectedUlpin || !role) return
-    getParcel(selectedUlpin, role).then(setParcel).catch(console.error)
-  }, [selectedUlpin, role])
-
-  useEffect(() => {
-    refreshParcel()
-  }, [refreshParcel])
-  useEffect(() => {
-    setSelectedUnit(null)
-    setConflicts(new Set())
-  }, [selectedUlpin])
-
-  const unit = useMemo(
-    () => parcel?.units?.find((u) => u.unit_ulpin === selectedUnit) || null,
-    [parcel, selectedUnit],
-  )
-
-  const filteredParcels = parcels.filter((p) =>
-    p.ulpin.toLowerCase().includes(search.toLowerCase()),
-  )
-
-  const onFocusUnit = (unitUlpin, parcelUlpin) => {
-    // FR21: auto-switch parcel and jump to 3D view so disputed unit is visible
-    if (parcelUlpin && parcelUlpin !== selectedUlpin) {
-      setSelectedUlpin(parcelUlpin)
-    }
-    setView3d(true)
-    setSelectedUnit(unitUlpin)
-    // Only highlight red if unit is actually in conflict
-    setConflicts((prev) => {
-      const unit = parcel?.units?.find((u) => u.unit_ulpin === unitUlpin)
-      if (unit?.validation_status === 'conflict') {
-        return new Set([...prev, unitUlpin])
-      }
-      return prev
-    })
-  }
-
-  return (
-    <div className="app">
-      <Topbar session={session} onLogout={onLogout}>
-        <input
-          className="search"
-          placeholder="search ULPIN e.g. TN-02-6001-2345-6789"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-      </Topbar>
-
-      <div className="parcel-strip">
-        {filteredParcels.map((p) => (
-          <button
-            key={p.ulpin}
-            className={`parcel-chip ${p.ulpin === selectedUlpin ? 'active' : ''}`}
-            onClick={() => setSelectedUlpin(p.ulpin)}
-          >
-            <span className="mono">{p.ulpin}</span>
-            <span className="muted tiny">
-              {p.district}, {p.state} · {p.unit_count} units
-            </span>
-          </button>
-        ))}
-        {parcels.length > 0 && filteredParcels.length === 0 && (
-          <span className="muted">no parcel matches “{search}”</span>
-        )}
-      </div>
-
-      {parcel && (
-        <main className="workspace">
-          <section className="viewport">
-            <div className="view-toolbar">
-              <button className={`btn ${!view3d ? 'primary' : ''}`} onClick={() => setView3d(false)}>
-                3D map
-              </button>
-              <button
-                className={`btn ${view3d ? 'primary' : ''}`}
-                onClick={() => setView3d(true)}
-                disabled={!parcel.has_vertical_structure}
-                title={parcel.has_vertical_structure ? '' : 'no vertical structure on this parcel yet'}
-              >
-                3D building{parcel.has_vertical_structure ? '' : ' (unavailable)'}
-              </button>
-              <button
-                className={`btn ${lidarShow ? 'primary' : ''}`}
-                onClick={toggleLidarBuildings}
-                title="show buildings generated from the LiDAR scan (stored in PostGIS)"
-              >
-                LiDAR buildings{lidarCount != null ? ` (${lidarCount})` : ''}
-              </button>
-              {parcel.has_vertical_structure && !view3d && <span className="badge-flag">⚑ this parcel has 3D vertical units</span>}
-            </div>
-            {!view3d ? (
-              <Suspense fallback={<PageFallback />}>
-                <ParcelMap
-                  parcels={parcels}
-                  selectedUlpin={selectedUlpin}
-                  onSelect={setSelectedUlpin}
-                  lidarFeatures={lidarShow ? (lidarFC?.features ?? []) : null}
-                />
-              </Suspense>
-            ) : (
-              <Suspense fallback={<PageFallback />}>
-                <Building3D
-                  parcel={parcel}
-                  units={parcel.units || []}
-                  selected={selectedUnit}
-                  conflictIds={conflicts}
-                  onSelect={setSelectedUnit}
-                />
-              </Suspense>
-            )}
-            <div className="legend">
-              <span><i style={{ background: '#4da3ff' }} /> owned</span>
-              <span><i style={{ background: '#ffb84d' }} /> leased</span>
-              <span><i style={{ background: '#8f9aa8' }} /> common</span>
-              <span><i style={{ background: '#b07aff' }} /> air-rights</span>
-              <span><i style={{ background: '#ff4d4d' }} /> conflict</span>
-              {lidarShow && <span><i style={{ background: '#2fbf8f' }} /> LiDAR buildings</span>}
-            </div>
-          </section>
-
-          <aside className="sidebar">
-            <div className="panel-section">
-              <h3>{parcel.district}, {parcel.state}</h3>
-              <table className="kv">
-                <tbody>
-                  <tr><td>base ULPIN</td><td className="mono">{parcel.ulpin}</td></tr>
-                  <tr><td>floors</td><td>G+{parcel.floor_count - 1}{parcel.basement_count ? ` · B${parcel.basement_count}` : ''}</td></tr>
-                  <tr><td>floor height</td><td>{parcel.floor_height_m} m</td></tr>
-                  <tr><td>vertical units</td><td>{parcel.units?.length ?? 0}</td></tr>
-                </tbody>
-              </table>
-              {(role === 'registrar' || role === 'surveyor') && (
-                <button className="btn" onClick={() => setShowNgdrs(true)}>
-                  push to NGDRS (mock)
-                </button>
-              )}
-            </div>
-
-            <div className="panel-section">
-              <h3>unit details</h3>
-              <UnitPanel unit={unit} role={role} onDisputeSubmitted={refreshParcel} />
-            </div>
-
-            {role === 'surveyor' && (
-              <SurveyorPanel parcel={parcel} onUnitsChanged={refreshParcel} setConflicts={setConflicts} />
-            )}
-
-            {role === 'registrar' && (
-              <>
-                <RegistrarPanel onFocusUnit={onFocusUnit} />
-                <div className="panel-section">
-                  <h3>ownership ledger</h3>
-                  {selectedUnit ? (
-                    <LedgerView unitUlpin={selectedUnit} role={role} />
-                  ) : (
-                    <p className="muted">select a unit to inspect its hash-chained history</p>
-                  )}
-                </div>
-              </>
-            )}
-
-            {role === 'citizen' && selectedUnit && (
-              <div className="panel-section">
-                <h3>ownership history</h3>
-                <LedgerView unitUlpin={selectedUnit} role={role} />
-              </div>
-            )}
-          </aside>
-        </main>
-      )}
-
-      {!parcel && <div className="loading muted">loading parcels…</div>}
-
-      {showNgdrs && <NgdrsModal parcelUlpin={selectedUlpin} onClose={() => setShowNgdrs(false)} />}
     </div>
   )
 }
