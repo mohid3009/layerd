@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
+import { Navigate, NavLink, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom'
 import { getParcels, getParcel, getSavedBuildings, getSavedStatus } from './api.js'
 import Landing from './components/Landing.jsx'
 import Login from './components/Login.jsx'
@@ -12,11 +13,110 @@ import NgdrsModal from './components/NgdrsModal.jsx'
 import LidarMap from './components/LidarMap.jsx'
 
 const ROLE_LABELS = { citizen: 'Citizen', surveyor: 'Surveyor', registrar: 'Registrar' }
+const SESSION_KEY = 'layerd-session'
+
+function loadSession() {
+  try {
+    return JSON.parse(sessionStorage.getItem(SESSION_KEY))
+  } catch {
+    return null
+  }
+}
+
+function saveSession(s) {
+  if (s) sessionStorage.setItem(SESSION_KEY, JSON.stringify(s))
+  else sessionStorage.removeItem(SESSION_KEY)
+}
 
 export default function App() {
-  const [session, setSession] = useState(null)
-  const [view, setView] = useState('landing')
-  const [loginRole, setLoginRole] = useState('citizen')
+  const [session, setSession] = useState(loadSession)
+  const updateSession = (s) => {
+    setSession(s)
+    saveSession(s)
+  }
+
+  return (
+    <Routes>
+      <Route path="/" element={<Home session={session} />} />
+      <Route path="/login" element={<LoginRoute session={session} setSession={updateSession} />} />
+      <Route
+        path="/dashboard"
+        element={
+          session ? <Dashboard session={session} onLogout={() => updateSession(null)} /> : <Navigate to="/login" replace />
+        }
+      />
+      <Route
+        path="/lidar"
+        element={
+          session ? <LidarPage session={session} onLogout={() => updateSession(null)} /> : <Navigate to="/login" replace />
+        }
+      />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  )
+}
+
+function Home({ session }) {
+  const navigate = useNavigate()
+  if (session) return <Navigate to="/dashboard" replace />
+  return <Landing onEnter={(role) => navigate(`/login?role=${role || 'citizen'}`)} />
+}
+
+function LoginRoute({ session, setSession }) {
+  const navigate = useNavigate()
+  const [params] = useSearchParams()
+  if (session) return <Navigate to="/dashboard" replace />
+  return (
+    <Login
+      initialRole={params.get('role') || 'citizen'}
+      onLogin={(s) => {
+        setSession(s)
+        navigate('/dashboard')
+      }}
+      onBack={() => navigate('/')}
+    />
+  )
+}
+
+function Topbar({ session, onLogout, children }) {
+  return (
+    <header className="topbar">
+      <div>
+        <h1>Layerd</h1>
+        <span className="muted tiny">3D cadastral system · SIH26095</span>
+      </div>
+      <nav className="mode-switch">
+        <NavLink to="/dashboard" end className={({ isActive }) => `btn ${isActive ? 'primary' : ''}`}>
+          parcels
+        </NavLink>
+        <NavLink to="/lidar" className={({ isActive }) => `btn ${isActive ? 'primary' : ''}`}>
+          LiDAR scan
+        </NavLink>
+      </nav>
+      {children}
+      <div className="session-box">
+        <div className="session-user">
+          <span className="session-name">{session.name}</span>
+          <span className={`session-role role-${session.role}`}>{ROLE_LABELS[session.role]}</span>
+        </div>
+        <button className="btn" onClick={onLogout}>
+          log out
+        </button>
+      </div>
+    </header>
+  )
+}
+
+function LidarPage({ session, onLogout }) {
+  return (
+    <div className="app">
+      <Topbar session={session} onLogout={onLogout} />
+      <LidarMap />
+    </div>
+  )
+}
+
+function Dashboard({ session, onLogout }) {
   const [parcels, setParcels] = useState([])
   const [selectedUlpin, setSelectedUlpin] = useState(null)
   const [parcel, setParcel] = useState(null)
@@ -25,7 +125,6 @@ export default function App() {
   const [conflicts, setConflicts] = useState(new Set())
   const [search, setSearch] = useState('')
   const [showNgdrs, setShowNgdrs] = useState(false)
-  const [mode, setMode] = useState('parcels') // 'parcels' | 'lidar'
   const [lidarShow, setLidarShow] = useState(false)
   const [lidarFC, setLidarFC] = useState(null)
   const [lidarCount, setLidarCount] = useState(null)
@@ -33,7 +132,6 @@ export default function App() {
   const role = session?.role ?? null
 
   useEffect(() => {
-    if (!session) return
     getParcels()
       .then((ps) => {
         setParcels(ps)
@@ -44,7 +142,7 @@ export default function App() {
       .then((s) => setLidarCount(s.available ? s.count : null))
       .catch(() => setLidarCount(null))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session])
+  }, [])
 
   const toggleLidarBuildings = () => {
     const next = !lidarShow
@@ -95,60 +193,17 @@ export default function App() {
     })
   }
 
-  if (!session) {
-    if (view === 'landing') {
-      return (
-        <Landing
-          onEnter={(role) => {
-            setLoginRole(role || 'citizen')
-            setView('auth')
-          }}
-        />
-      )
-    }
-    return (
-      <Login
-        onLogin={setSession}
-        initialRole={loginRole}
-        onBack={() => setView('landing')}
-      />
-    )
-  }
-
   return (
     <div className="app">
-      <header className="topbar">
-        <div>
-          <h1>Layerd</h1>
-          <span className="muted tiny">3D cadastral system · SIH26095</span>
-        </div>
-        <div className="mode-switch">
-          <button className={`btn ${mode === 'parcels' ? 'primary' : ''}`} onClick={() => setMode('parcels')}>
-            parcels
-          </button>
-          <button className={`btn ${mode === 'lidar' ? 'primary' : ''}`} onClick={() => setMode('lidar')}>
-            LiDAR scan
-          </button>
-        </div>
+      <Topbar session={session} onLogout={onLogout}>
         <input
           className="search"
           placeholder="search ULPIN e.g. TN-02-6001-2345-6789"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <div className="session-box">
-          <div className="session-user">
-            <span className="session-name">{session.name}</span>
-            <span className={`session-role role-${session.role}`}>{ROLE_LABELS[session.role]}</span>
-          </div>
-          <button className="btn" onClick={() => setSession(null)}>log out</button>
-        </div>
-      </header>
+      </Topbar>
 
-      {mode === 'lidar' ? (
-        <LidarMap />
-      ) : (
-        <>
       <div className="parcel-strip">
         {filteredParcels.map((p) => (
           <button
@@ -269,8 +324,7 @@ export default function App() {
       )}
 
       {!parcel && <div className="loading muted">loading parcels…</div>}
-        </>
-      )}
+
       {showNgdrs && <NgdrsModal parcelUlpin={selectedUlpin} onClose={() => setShowNgdrs(false)} />}
     </div>
   )

@@ -1,5 +1,19 @@
 # 3D ULPIN — Run Instructions
 
+## Routes (React Router)
+
+| URL | Description |
+|-----|-------------|
+| `/` | Landing page (redirects to `/dashboard` if logged in) |
+| `/login?role=citizen|surveyor|registrar` | Login for the chosen role |
+| `/dashboard` | Main cadastral dashboard — parcels map, units, disputes (protected) |
+| `/lidar` | LiDAR scan — extraction + manual building editing (protected) |
+
+Protected routes redirect to `/login` when there is no session; the session survives
+page refreshes (stored in `sessionStorage`).
+
+---
+
 ## PostgreSQL + PostGIS (generated buildings)
 
 Generation results (and manual edits) are persisted to PostGIS and shown on the main
