@@ -28,10 +28,13 @@ python setup_db.py
 - DSN: default `postgresql://postgres:postgres@localhost:5432/layerd`, override with the
   `POSTGRES_DSN` env var
 - table `lidar_buildings`: `geometry(Polygon,4326)` + GIST index, heights/stories/sources,
-  full property JSONB
+  full property JSONB; every extraction run is stored as a **separate scan session**
+  (`lidar_sessions` table) — sessions accumulate, nothing is overwritten
 - the pipeline saves automatically as its final step ("Saving to PostGIS"); manual edits in
-  the LiDAR view auto-sync (debounced), and `POST /lidar/buildings/sync` reconciles the
-  table with the edited set (deletes removed buildings)
+  the LiDAR view auto-sync (debounced) **within their own session**, and
+  `POST /lidar/buildings/sync` reconciles only that session
+- dashboard sidebar lists all scan sessions: tick/untick to show/hide each one on the map,
+  ✕ deletes a session and its buildings (`DELETE /lidar/sessions/{id}`)
 - if PostGIS is down, extraction still works — the save step shows an error and the stats
   carry a warning
 

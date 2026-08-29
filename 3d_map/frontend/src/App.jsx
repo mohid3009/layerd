@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react'
 import { Navigate, NavLink, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom'
-import { getSavedBuildings } from './api.js'
+import { getSavedBuildings, getSessions, deleteSession } from './api.js'
 import Landing from './components/Landing.jsx'
 import Login from './components/Login.jsx'
 import BuildingsMap from './components/BuildingsMap.jsx'
@@ -109,38 +109,67 @@ function Topbar({ session, onLogout, children }) {
 function Dashboard({ session, onLogout }) {
   const [state, setState] = useState('loading') // loading | ready | empty | unavailable
   const [features, setFeatures] = useState([])
+  const [sessions, setSessions] = useState([])
+  const [activeSessions, setActiveSessions] = useState(null) // null = all visible
   const [selectedId, setSelectedId] = useState(null)
   const [reloadKey, setReloadKey] = useState(0)
 
   useEffect(() => {
     let cancelled = false
     setState('loading')
-    getSavedBuildings()
-      .then((fc) => {
+    Promise.all([getSavedBuildings(), getSessions()])
+      .then(([fc, ss]) => {
         if (cancelled) return
         setFeatures(fc.features || [])
+        setSessions(ss)
+        setActiveSessions(new Set(ss.map((s) => s.session_id)))
         setState(fc.features?.length ? 'ready' : 'empty')
       })
       .catch(() => {
         if (cancelled) return
         setFeatures([])
+        setSessions([])
         setState('unavailable')
       })
     return () => { cancelled = true }
   }, [reloadKey])
 
+  // buildings from the visible sessions only
+  const visibleFeatures = useMemo(
+    () =>
+      !activeSessions || activeSessions.size === 0
+        ? features
+        : features.filter((f) => activeSessions.has(f.properties.session_id)),
+    [features, activeSessions],
+  )
+
+  const toggleSession = (sid) => {
+    setActiveSessions((prev) => {
+      const next = new Set(prev || sessions.map((s) => s.session_id))
+      if (next.has(sid)) next.delete(sid)
+      else next.add(sid)
+      return next
+    })
+  }
+
+  const removeSession = (sid) => {
+    deleteSession(sid)
+      .then(() => setReloadKey((k) => k + 1))
+      .catch((e) => console.error('session delete failed:', e))
+  }
+
   const selected = useMemo(
-    () => features.find((f) => f.properties.building_id === selectedId)?.properties ?? null,
-    [features, selectedId],
+    () => visibleFeatures.find((f) => f.properties.building_id === selectedId)?.properties ?? null,
+    [visibleFeatures, selectedId],
   )
 
   const stats = useMemo(() => {
-    const n = features.length
+    const n = visibleFeatures.length
     if (!n) return null
-    const fromLidar = features.filter((f) => f.properties.height_source === 'lidar').length
-    const assumed = features.filter((f) => f.properties.height_source === 'assumed-1-story').length
-    const edited = features.filter((f) => ['edited', 'manual'].includes(f.properties.height_source)).length
-    const heights = features.map((f) => f.properties.height_m || 0)
+    const fromLidar = visibleFeatures.filter((f) => f.properties.height_source === 'lidar').length
+    const assumed = visibleFeatures.filter((f) => f.properties.height_source === 'assumed-1-story').length
+    const edited = visibleFeatures.filter((f) => ['edited', 'manual'].includes(f.properties.height_source)).length
+    const heights = visibleFeatures.map((f) => f.properties.height_m || 0)
     return {
       n,
       fromLidar,
@@ -149,7 +178,7 @@ function Dashboard({ session, onLogout }) {
       tallest: Math.max(...heights),
       mean: heights.reduce((a, b) => a + b, 0) / n,
     }
-  }, [features])
+  }, [visibleFeatures])
 
   return (
     <div className="app">
@@ -170,7 +199,7 @@ function Dashboard({ session, onLogout }) {
       <main className="workspace">
         <section className="viewport">
           {state === 'ready' && (
-            <BuildingsMap features={features} selectedId={selectedId} onSelect={setSelectedId} />
+            <BuildingsMap features={visibleFeatures} selectedId={selectedId} onSelect={setSelectedId} />
           )}
           {state === 'loading' && <div className="loading muted">loading saved buildings…</div>}
           {state === 'empty' && (
@@ -190,6 +219,39 @@ function Dashboard({ session, onLogout }) {
         </section>
 
         <aside className="sidebar">
+          <div className="panel-section">
+            <h3>scan sessions</h3>
+            {sessions.length ? (
+              sessions.map((s) => {
+                const active = !activeSessions || activeSessions.has(s.session_id)
+                return (
+                  <div key={s.session_id} className={`session-row ${active ? '' : 'off'}`}>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={active}
+                        onChange={() => toggleSession(s.session_id)}
+                      />
+                      <span className="session-label" title={s.session_id}>
+                        {s.label || s.session_id}
+                      </span>
+                    </label>
+                    <span className="muted tiny mono">{s.buildings} bld</span>
+                    <button
+                      className="btn danger tiny"
+                      title="delete this session and its buildings"
+                      onClick={() => removeSession(s.session_id)}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )
+              })
+            ) : (
+              <p className="muted tiny">no sessions yet</p>
+            )}
+          </div>
+
           <div className="panel-section">
             <h3>saved buildings</h3>
             {stats ? (

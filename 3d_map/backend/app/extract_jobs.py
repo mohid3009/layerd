@@ -129,13 +129,24 @@ def run_extraction(job, mode, laz_bytes, footprints_bytes, bbox, bbox_crs, epsg,
             stats["osm_buildings_fetched"] = len(source_fc["features"])
             stats["query_bbox_wgs84"] = [round(v, 6) for v in query_bbox]
 
-        # ── step 5: persist to PostGIS (non-fatal — DB may be unavailable) ──
+        # ── step 5: persist to PostGIS as a scan session (non-fatal) ────────
         _set_step(job, "save", "running")
         postgis_warning = None
         try:
             from .postgis import save_buildings
 
-            stats["postgis_saved"] = save_buildings(fc, job_id=job["job_id"])
+            if mode == "osm":
+                label = f"OSM scan @ {query_bbox[0]:.3f}, {query_bbox[1]:.3f}"
+            else:
+                label = "GeoJSON import"
+            stats["postgis_saved"] = save_buildings(
+                fc,
+                session_id=job["job_id"],
+                label=label,
+                mode=mode,
+                crs=crs_desc,
+                reconcile=True,
+            )
         except Exception as e:  # noqa: BLE001 — degrade gracefully, keep result
             _set_step(job, "save", "error")
             postgis_warning = f"PostGIS save failed: {e}"
@@ -146,7 +157,12 @@ def run_extraction(job, mode, laz_bytes, footprints_bytes, bbox, bbox_crs, epsg,
 
         with _lock:
             job["state"] = "done"
-            job["result"] = {"crs": crs_desc, "stats": stats, "buildings": fc}
+            job["result"] = {
+                "crs": crs_desc,
+                "stats": stats,
+                "buildings": fc,
+                "session_id": job["job_id"],
+            }
 
     except LidarExtractionError as e:
         _fail(job, str(e))

@@ -130,7 +130,7 @@ def extraction_status(job_id: str):
     }
 
 
-# ---------------- PostGIS persistence (saved buildings) ----------------
+# ---------------- PostGIS persistence (saved buildings + scan sessions) ----------------
 
 @app.get("/lidar/buildings/status")
 def lidar_saved_status():
@@ -141,26 +141,30 @@ def lidar_saved_status():
 
 
 @app.get("/lidar/buildings")
-def lidar_saved_buildings():
-    """All saved buildings as GeoJSON straight from PostGIS."""
+def lidar_saved_buildings(session_id: str | None = Query(None)):
+    """Saved buildings as GeoJSON — all scan sessions, or one via ?session_id=."""
     from .postgis import fetch_buildings, is_available
     if not is_available():
         raise HTTPException(503, "PostGIS is not available")
-    return fetch_buildings()
+    return fetch_buildings(session_id=session_id)
 
 
 @app.post("/lidar/buildings/sync")
 def lidar_sync_buildings(payload: dict = Body(...)):
     """
-    Persist the (possibly manually edited) working set: upserts every feature
-    and deletes rows missing from the payload, so PostGIS mirrors the editor.
+    Persist the (possibly manually edited) working set of ONE scan session:
+    upserts every feature into that session and deletes session rows missing
+    from the payload. Other sessions are never touched.
     """
+    import uuid
+
     from .postgis import save_buildings
     fc = payload.get("buildings")
     if not isinstance(fc, dict) or fc.get("type") != "FeatureCollection":
         raise HTTPException(400, "body must contain a FeatureCollection under 'buildings'")
-    count = save_buildings(fc, job_id=payload.get("job_id"), reconcile=True)
-    return {"status": "ok", "count": count}
+    session_id = payload.get("session_id") or uuid.uuid4().hex[:12]
+    count = save_buildings(fc, session_id=session_id, label=payload.get("label"), reconcile=True)
+    return {"status": "ok", "session_id": session_id, "count": count}
 
 
 @app.post("/lidar/buildings/clear")
@@ -168,5 +172,24 @@ def lidar_clear_buildings():
     from .postgis import clear_buildings
     clear_buildings()
     return {"status": "cleared"}
+
+
+@app.get("/lidar/sessions")
+def lidar_sessions():
+    """All scan sessions with their live building counts."""
+    from .postgis import is_available, list_sessions
+    if not is_available():
+        raise HTTPException(503, "PostGIS is not available")
+    return list_sessions()
+
+
+@app.delete("/lidar/sessions/{session_id}")
+def lidar_delete_session(session_id: str):
+    """Delete a scan session and all of its buildings."""
+    from .postgis import delete_session, is_available
+    if not is_available():
+        raise HTTPException(503, "PostGIS is not available")
+    delete_session(session_id)
+    return {"status": "deleted", "session_id": session_id}
 
 

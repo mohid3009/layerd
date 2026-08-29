@@ -37,7 +37,10 @@ export const startExtraction = (lazFile, { mode, bbox, bboxCrs, footprintsFile, 
 export const getExtractionStatus = (jobId) => req(`/lidar/extract/${jobId}`)
 
 // ── Saved buildings (PostGIS) ───────────────────────────────────────────────
-export const getSavedBuildings = () => req('/lidar/buildings')
+export const getSavedBuildings = (sessionId) =>
+  req(`/lidar/buildings${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''}`)
 export const getSavedStatus = () => req('/lidar/buildings/status')
-export const syncSavedBuildings = (fc) =>
-  req('/lidar/buildings/sync', { method: 'POST', body: JSON.stringify({ buildings: fc }) })
+export const syncSavedBuildings = (fc, sessionId) =>
+  req('/lidar/buildings/sync', { method: 'POST', body: JSON.stringify({ buildings: fc, session_id: sessionId }) })
+export const getSessions = () => req('/lidar/sessions')
+export const deleteSession = (sessionId) => req(`/lidar/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })

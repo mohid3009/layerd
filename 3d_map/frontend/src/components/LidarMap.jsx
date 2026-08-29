@@ -51,6 +51,7 @@ export default function LidarMap() {
   const finishFreeformRef = useRef(() => {})
   const dirtyRef = useRef(false) // unsaved manual edits?
   const syncTimerRef = useRef(null)
+  const sessionIdRef = useRef(null) // PostGIS scan session of the current job
   const floorHRef = useRef(3.0)
   const addBuildingRef = useRef(() => {})
 
@@ -92,6 +93,7 @@ export default function LidarMap() {
     setEditing(false)
     setDrawMode(false)
     dirtyRef.current = false
+    sessionIdRef.current = null
     setPostgisMsg(null)
     setJob({
       state: 'running',
@@ -129,6 +131,7 @@ export default function LidarMap() {
             if (st.state === 'done') {
               setResult(st.result)
               setFeatures(st.result.buildings.features)
+              sessionIdRef.current = st.result.session_id ?? null
               originalsRef.current = new Map(
                 st.result.buildings.features.map((f) => [
                   f.properties.building_id,
@@ -159,12 +162,13 @@ export default function LidarMap() {
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
     syncTimerRef.current = setTimeout(async () => {
       try {
-        const r = await syncSavedBuildings({
-          type: 'FeatureCollection',
-          features: featuresRef.current,
-        })
+        const r = await syncSavedBuildings(
+          { type: 'FeatureCollection', features: featuresRef.current },
+          sessionIdRef.current,
+        )
+        if (r.session_id) sessionIdRef.current = r.session_id
         dirtyRef.current = false
-        setPostgisMsg(`saved to PostGIS (${r.count} buildings)`)
+        setPostgisMsg(`saved to PostGIS · session ${r.session_id} (${r.count} buildings)`)
       } catch (e) {
         setPostgisMsg(`PostGIS sync failed: ${e.message}`)
       }

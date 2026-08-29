@@ -23,6 +23,7 @@ SCHEMA = """
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE TABLE IF NOT EXISTS lidar_buildings (
     building_id TEXT PRIMARY KEY,
+    session_id TEXT,
     job_id TEXT,
     name TEXT,
     height_m DOUBLE PRECISION,
@@ -42,6 +43,23 @@ CREATE TABLE IF NOT EXISTS lidar_buildings (
 CREATE INDEX IF NOT EXISTS lidar_buildings_geom_gix
     ON lidar_buildings USING GIST (geom);
 CREATE INDEX IF NOT EXISTS lidar_buildings_job_idx ON lidar_buildings (job_id);
+
+-- one row per extraction run; buildings reference their scan session
+CREATE TABLE IF NOT EXISTS lidar_sessions (
+    session_id TEXT PRIMARY KEY,
+    label TEXT,
+    mode TEXT,
+    crs TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE lidar_buildings ADD COLUMN IF NOT EXISTS session_id TEXT;
+CREATE INDEX IF NOT EXISTS lidar_buildings_session_idx ON lidar_buildings (session_id);
+UPDATE lidar_buildings SET session_id = COALESCE(job_id, 'legacy')
+WHERE session_id IS NULL;
+INSERT INTO lidar_sessions (session_id, label)
+SELECT DISTINCT session_id, 'Imported scan'
+FROM lidar_buildings WHERE session_id IS NOT NULL
+ON CONFLICT (session_id) DO NOTHING;
 """
 
 
@@ -75,12 +93,12 @@ def is_available():
         return False
 
 
-def _row_from_feature(feature, job_id):
+def _row_from_feature(feature, session_id):
     p = dict(feature.get("properties") or {})
     geom = feature.get("geometry")
     return {
         "building_id": p.get("building_id"),
-        "job_id": job_id,
+        "session_id": session_id,
         "name": p.get("name"),
         "height_m": p.get("height_m"),
         "stories": p.get("stories"),
@@ -98,16 +116,16 @@ def _row_from_feature(feature, job_id):
 
 UPSERT = """
 INSERT INTO lidar_buildings
-    (building_id, job_id, name, height_m, stories, ground_z, roof_z, lidar_points,
+    (building_id, session_id, name, height_m, stories, ground_z, roof_z, lidar_points,
      height_source, original_height_m, original_stories, original_height_source,
      props, geom)
 VALUES (
-    %(building_id)s, %(job_id)s, %(name)s, %(height_m)s, %(stories)s, %(ground_z)s,
+    %(building_id)s, %(session_id)s, %(name)s, %(height_m)s, %(stories)s, %(ground_z)s,
     %(roof_z)s, %(lidar_points)s, %(height_source)s, %(original_height_m)s,
     %(original_stories)s, %(original_height_source)s, %(props)s::jsonb,
     ST_SetSRID(ST_GeomFromGeoJSON(%(geom)s), 4326))
 ON CONFLICT (building_id) DO UPDATE SET
-    job_id = EXCLUDED.job_id,
+    session_id = EXCLUDED.session_id,
     name = EXCLUDED.name,
     height_m = EXCLUDED.height_m,
     stories = EXCLUDED.stories,
@@ -124,18 +142,39 @@ ON CONFLICT (building_id) DO UPDATE SET
 """
 
 
-def save_buildings(featurecollection, job_id=None, reconcile=False):
+def save_session(session_id, label=None, mode=None, crs=None):
+    """Register/refresh a scan session row."""
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO lidar_sessions (session_id, label, mode, crs)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (session_id) DO UPDATE SET
+                    label = COALESCE(EXCLUDED.label, lidar_sessions.label),
+                    mode = COALESCE(EXCLUDED.mode, lidar_sessions.mode),
+                    crs = COALESCE(EXCLUDED.crs, lidar_sessions.crs)
+                """,
+                (session_id, label, mode, crs),
+            )
+
+
+def save_buildings(featurecollection, session_id, label=None, mode=None, crs=None, reconcile=True):
     """
-    Upsert every Feature of the FeatureCollection. With reconcile=True, rows
-    whose building_id is not in the payload are deleted, so the table mirrors
-    the (possibly manually edited) working set.
-    Returns the number of rows now in the table.
+    Upsert every Feature of the FeatureCollection into the given scan session.
+    With reconcile=True, rows belonging to THIS session that are missing from
+    the payload are deleted (e.g. buildings removed while editing) — other
+    sessions are never touched.
+    Returns the number of buildings now in the session.
     """
+    if not session_id:
+        raise ValueError("session_id is required")
     features = featurecollection.get("features", [])
+    save_session(session_id, label=label, mode=mode, crs=crs)
     with _conn() as conn:
         with conn.cursor() as cur:
             for f in features:
-                row = _row_from_feature(f, job_id)
+                row = _row_from_feature(f, session_id)
                 if not row["building_id"] or not row["geom"]:
                     continue
                 cur.execute(UPSERT, row)
@@ -146,33 +185,81 @@ def save_buildings(featurecollection, job_id=None, reconcile=False):
                     if f.get("properties", {}).get("building_id")
                 ]
                 cur.execute(
-                    "DELETE FROM lidar_buildings WHERE building_id <> ALL(%s)",
-                    (ids,),
+                    "DELETE FROM lidar_buildings "
+                    "WHERE session_id = %s AND building_id <> ALL(%s)",
+                    (session_id, ids),
                 )
-            cur.execute("SELECT COUNT(*) FROM lidar_buildings")
+            cur.execute(
+                "SELECT COUNT(*) FROM lidar_buildings WHERE session_id = %s",
+                (session_id,),
+            )
             return cur.fetchone()[0]
 
 
-def fetch_buildings():
-    """All saved buildings as a GeoJSON FeatureCollection (WGS84)."""
+def fetch_buildings(session_id=None):
+    """Saved buildings as a GeoJSON FeatureCollection (WGS84), all sessions or one."""
     with _conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT building_id, props, ST_AsGeoJSON(geom) "
-                "FROM lidar_buildings ORDER BY updated_at DESC"
-            )
+            if session_id:
+                cur.execute(
+                    "SELECT building_id, session_id, props, ST_AsGeoJSON(geom) "
+                    "FROM lidar_buildings WHERE session_id = %s "
+                    "ORDER BY updated_at DESC",
+                    (session_id,),
+                )
+            else:
+                cur.execute(
+                    "SELECT building_id, session_id, props, ST_AsGeoJSON(geom) "
+                    "FROM lidar_buildings ORDER BY updated_at DESC"
+                )
             rows = cur.fetchall()
     return {
         "type": "FeatureCollection",
         "features": [
             {
                 "type": "Feature",
-                "properties": r[1],
-                "geometry": json.loads(r[2]),
+                "properties": {**r[2], "session_id": r[1]},
+                "geometry": json.loads(r[3]),
             }
             for r in rows
         ],
     }
+
+
+def list_sessions():
+    """All scan sessions with live building counts, newest first."""
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT s.session_id, s.label, s.mode, s.crs, s.created_at,
+                       COUNT(b.building_id) AS buildings
+                FROM lidar_sessions s
+                LEFT JOIN lidar_buildings b ON b.session_id = s.session_id
+                GROUP BY s.session_id, s.label, s.mode, s.crs, s.created_at
+                ORDER BY s.created_at DESC
+                """
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "session_id": r[0],
+            "label": r[1],
+            "mode": r[2],
+            "crs": r[3],
+            "created_at": r[4].isoformat() if r[4] else None,
+            "buildings": r[5],
+        }
+        for r in rows
+    ]
+
+
+def delete_session(session_id):
+    """Remove a scan session and all of its buildings."""
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM lidar_buildings WHERE session_id = %s", (session_id,))
+            cur.execute("DELETE FROM lidar_sessions WHERE session_id = %s", (session_id,))
 
 
 def count_buildings():
