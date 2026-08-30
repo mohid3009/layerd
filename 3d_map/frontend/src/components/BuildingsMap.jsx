@@ -1,6 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Map as MapLibreMap, NavigationControl } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+import { floorSlices } from '../floors.js'
 
 // Keyless tile providers (no {r} placeholder — MapLibre does not expand it).
 const TILES = {
@@ -44,6 +45,12 @@ export default function BuildingsMap({ features, selectedId, onSelect }) {
   const featuresRef = useRef(features)
   featuresRef.current = features
 
+  // per-floor render slices — multi-storey buildings get one coloured extrusion
+  // per storey; selection still works via the building_id kept on each slice
+  const renderFeatures = useMemo(() => floorSlices(features), [features])
+  const renderRef = useRef(renderFeatures)
+  renderRef.current = renderFeatures
+
   useEffect(() => {
     if (mapRef.current || !containerRef.current) return
     const map = new MapLibreMap({
@@ -74,7 +81,7 @@ export default function BuildingsMap({ features, selectedId, onSelect }) {
             paint: {
               'fill-extrusion-color': ['get', 'color'],
               'fill-extrusion-height': ['get', 'height_m'],
-              'fill-extrusion-base': 0,
+              'fill-extrusion-base': ['coalesce', ['get', 'base_m'], 0],
               'fill-extrusion-opacity': 0.85,
             } },
           { id: 'bldg-line', type: 'line', source: 'buildings',
@@ -96,7 +103,7 @@ export default function BuildingsMap({ features, selectedId, onSelect }) {
 
     map.on('load', () => {
       loadedRef.current = true
-      map.getSource('buildings')?.setData({ type: 'FeatureCollection', features: featuresRef.current })
+      map.getSource('buildings')?.setData({ type: 'FeatureCollection', features: renderRef.current })
       const bb = bboxOf(featuresRef.current)
       if (bb) map.fitBounds(bb, { padding: 60, duration: 1400, maxZoom: 17 })
     })
@@ -114,10 +121,10 @@ export default function BuildingsMap({ features, selectedId, onSelect }) {
   useEffect(() => {
     const map = mapRef.current
     if (!map || !loadedRef.current) return
-    map.getSource('buildings')?.setData({ type: 'FeatureCollection', features })
+    map.getSource('buildings')?.setData({ type: 'FeatureCollection', features: renderFeatures })
     const bb = bboxOf(features)
     if (bb) map.fitBounds(bb, { padding: 60, duration: 1200, maxZoom: 17 })
-  }, [features])
+  }, [features, renderFeatures])
 
   // selection highlight
   useEffect(() => {

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Map as MapLibreMap, NavigationControl } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { getExtractionStatus, getSavedStatus, startExtraction, syncSavedBuildings } from '../api.js'
+import { floorSlices } from '../floors.js'
 
 // Keyless tile providers (same set as ParcelMap — no {r} placeholder).
 const TILES = {
@@ -60,6 +61,12 @@ export default function LidarMap({ canEdit = true }) {
   const floorH = parseFloat(floorHeight) || 3.0
   floorHRef.current = floorH
   featuresRef.current = features
+
+  // per-floor render slices (multi-storey buildings get one extrusion + colour
+  // per storey); building-level `features` stay untouched for sync/export
+  const renderFeatures = useMemo(() => floorSlices(features), [features])
+  const renderRef = useRef(renderFeatures)
+  renderRef.current = renderFeatures
 
   const selectedFeature = useMemo(
     () => features.find((f) => f.properties.building_id === selectedId) || null,
@@ -296,8 +303,8 @@ export default function LidarMap({ canEdit = true }) {
   useEffect(() => {
     const map = mapRef.current
     if (!map || !loadedRef.current) return
-    map.getSource('buildings')?.setData({ type: 'FeatureCollection', features })
-  }, [features])
+    map.getSource('buildings')?.setData({ type: 'FeatureCollection', features: renderFeatures })
+  }, [renderFeatures])
 
   // draw-mode bookkeeping (cursor, dblclick-zoom, cancel pending shape)
   useEffect(() => {
@@ -358,7 +365,7 @@ export default function LidarMap({ canEdit = true }) {
             paint: {
               'fill-extrusion-color': ['get', 'color'],
               'fill-extrusion-height': ['get', 'height_m'],
-              'fill-extrusion-base': 0,
+              'fill-extrusion-base': ['coalesce', ['get', 'base_m'], 0],
               'fill-extrusion-opacity': 0.85,
             } },
           { id: 'bldg-line', type: 'line', source: 'buildings',
@@ -379,7 +386,7 @@ export default function LidarMap({ canEdit = true }) {
 
     map.on('load', () => {
       loadedRef.current = true
-      map.getSource('buildings').setData({ type: 'FeatureCollection', features: featuresRef.current })
+      map.getSource('buildings').setData({ type: 'FeatureCollection', features: renderRef.current })
       map.fitBounds(bboxOf({ type: 'FeatureCollection', features: featuresRef.current }), { padding: 60, duration: 1200 })
     })
     map.on('click', 'bldg-extrude', (e) => {
@@ -482,6 +489,9 @@ export default function LidarMap({ canEdit = true }) {
               <span><i style={{ background: '#4da3ff' }} /> LiDAR-measured height</span>
               <span><i style={{ background: '#ffb84d' }} /> assumed 1 storey (no points)</span>
               <span><i style={{ background: '#2fbf8f' }} /> edited / manual</span>
+              <span>
+                <i style={{ background: 'linear-gradient(90deg, #3f5fd0, #46c8c0, #d8cf4e)' }} /> storeys (ground → roof)
+              </span>
               {!canEdit && <span className="muted tiny">view-only — surveyors can edit</span>}
               {selected && <span className="mono tiny">{selected.building_id} · {selected.height_m} m · {selected.stories} storeys</span>}
             </div>
