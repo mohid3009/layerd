@@ -197,40 +197,9 @@ from the cloud itself and checks both the measured and the 1-storey fallback pat
 
 ---
 
-## Start the App (pick one)
+## Start the App (three ways)
 
-### A. Mobile (Expo Go, same Wi-Fi)
-
-The backend must listen on the LAN so the phone can reach it:
-
-```powershell
-cd 3d_map\backend
-..\..\lidarvenv\Scripts\Activate.ps1
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-Allow inbound port 8000 once (as Administrator):
-`netsh advfirewall firewall add rule name="Layerd API 8000" dir=in action=allow protocol=TCP localport=8000`
-
-Then run the Expo client (PC Wi-Fi IP is currently `172.16.98.188`):
-
-```powershell
-cd 3d_map\App
-npm install
-npm start
-```
-
-Scan the QR code with **Expo Go** (phone on the same Wi-Fi). The app:
-- logs in against the backend (`POST /api/login`, demo credentials pre-filled per role),
-- lists all saved buildings with sessions (pull-to-refresh),
-- opens a building's **3D ULPIN unit tree**: base ULPIN, units grouped by floor
-  with ULPIN + owner, tap a unit for area / rights / status / segmentation,
-  and generate / re-segment units (surveyor or registrar) — including the
-  YOLOv11-seg floor-plan path.
-- The PC address is editable on the login screen (defaults to
-  `172.16.98.188:8000/api`) and persisted on the device.
-
-### B. Desktop app (Electron)
+### A. Desktop app (Electron)
 
 ```powershell
 cd 3d_map\desktop
@@ -248,7 +217,7 @@ npm start          # spawns the backend + opens the Layerd window
 - Requires a one-time `npm run build` in `3d_map/frontend` so `dist/` exists
   (the backend serves it).
 
-### C. Web (two terminals)
+### B. Web (two terminals)
 
 ### Terminal 1 — Backend
 
