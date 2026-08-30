@@ -300,6 +300,7 @@ function Dashboard({ session, onLogout }) {
   const canEdit = session.role === 'surveyor' // surveyor manages scan sessions
   const isRegistrar = session.role === 'registrar'
   const canEditBuildings = session.role !== 'citizen' // surveyor or registrar
+  const navigate = useNavigate()
 
   const showToast = (kind, text) => {
     setToast({ kind, text })
@@ -754,6 +755,15 @@ function Dashboard({ session, onLogout }) {
                   </tr>
                 </tbody>
               </table>
+              <div className="btn-row">
+                <button
+                  className="btn"
+                  title="open this building's 3D ULPIN unit tree"
+                  onClick={() => navigate(`/ulpin?building=${encodeURIComponent(selected.building_id)}`)}
+                >
+                  ⬢ open ULPIN view
+                </button>
+              </div>
               {editingBld ? (
                 <div className="edit-form">
                   <label>
@@ -877,11 +887,12 @@ function LidarPage({ session, onLogout }) {
 }
 
 function UlpinPage({ session, onLogout }) {
+  const [params] = useSearchParams()
   return (
     <div className="app">
       <Topbar session={session} onLogout={onLogout} />
       <Suspense fallback={<PageFallback />}>
-        <UlpinView session={session} />
+        <UlpinView session={session} initialBuilding={params.get('building')} />
       </Suspense>
     </div>
   )

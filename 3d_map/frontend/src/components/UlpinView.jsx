@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
@@ -42,7 +42,8 @@ function UnitMesh({ unit, w, d, fh, color, selected, onPick }) {
   )
 }
 
-export default function UlpinView({ session }) {
+export default function UlpinView({ session, initialBuilding = null }) {
+  const bootstrappedRef = useRef(false)
   const canManage = session.role !== 'citizen'
   const [buildings, setBuildings] = useState([])
   const [selId, setSelId] = useState(null)
@@ -74,6 +75,13 @@ export default function UlpinView({ session }) {
       .then((r) => setUnits(r.units || []))
       .catch(() => setUnits([]))
   }
+
+  // deep link (dashboard → /ulpin?building=<id>): select and open that building
+  useEffect(() => {
+    if (bootstrappedRef.current || !buildings.length || !initialBuilding) return
+    bootstrappedRef.current = true
+    selectBuilding(initialBuilding)
+  }, [buildings, initialBuilding]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const generate = () => {
     if (!selId) return
