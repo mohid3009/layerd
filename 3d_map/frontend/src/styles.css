@@ -971,6 +971,37 @@ input[type='file']::file-selector-button:hover { border-color: rgba(232, 232, 23
 }
 .login-card .btn.primary:hover { background: #f5f5f7; }
 
+/* ---------- login portal (pops over the landing page) ---------- */
+.login-portal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  padding: 20px;
+}
+.login-portal {
+  width: 500px;
+  max-width: 96vw;
+  max-height: 92vh;
+  overflow-y: auto;
+  border-radius: 22px;
+  background: var(--panel-solid);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.65);
+}
+/* neutralise the full-screen login wrapper inside the portal */
+.login-portal .login-screen {
+  height: auto;
+  width: 100%;
+  background: none;
+  padding: 30px 32px 26px;
+}
+
 /* ---------- LiDAR view ---------- */
 .mode-switch {
   display: flex;

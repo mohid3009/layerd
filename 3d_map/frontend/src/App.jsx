@@ -36,7 +36,7 @@ export default function App() {
 
   return (
     <Routes>
-      <Route path="/" element={<Home session={session} />} />
+      <Route path="/" element={<Home session={session} setSession={updateSession} />} />
       <Route path="/login" element={<LoginRoute session={session} setSession={updateSession} />} />
       <Route
         path="/dashboard"
@@ -59,10 +59,10 @@ export default function App() {
   )
 }
 
-function Home({ session }) {
-  const navigate = useNavigate()
+function Home({ session, setSession }) {
   if (session) return <Navigate to="/dashboard" replace />
-  return <Landing onEnter={(role) => navigate(`/login?role=${role || 'citizen'}`)} />
+  // the landing page pops in, then opens the login portal in place
+  return <Landing onLogin={setSession} />
 }
 
 function LoginRoute({ session, setSession }) {

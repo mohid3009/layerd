@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useRef, useState, Suspense, lazy } from 'react'
-import { motion, useScroll, useTransform, useInView, animate } from 'framer-motion'
+import { motion, useScroll, useTransform, useInView, animate, AnimatePresence } from 'framer-motion'
+import Login from './Login.jsx'
 
 // three.js + drei (~1 MB) load only when the globe actually renders
 const HeroGlobe = lazy(() => import('./HeroGlobe.jsx'))
@@ -12,10 +13,10 @@ function Reveal({ children, className = '', delay = 0 }) {
   return (
     <motion.div
       className={className}
-      initial={{ opacity: 0, y: 28 }}
-      whileInView={{ opacity: 1, y: 0 }}
+      initial={{ opacity: 0, y: 34, scale: 0.92 }}
+      whileInView={{ opacity: 1, y: 0, scale: 1 }}
       viewport={{ once: true, margin: '-80px' }}
-      transition={{ duration: 0.8, ease: EASE, delay }}
+      transition={{ type: 'spring', stiffness: 210, damping: 21, delay }}
     >
       {children}
     </motion.div>
@@ -120,9 +121,14 @@ function PillGhost({ children, href, onClick }) {
   return <motion.button type="button" onClick={onClick} className={cls} {...mp}>{children}</motion.button>
 }
 
-function Nav({ onEnter }) {
+function Nav({ openLogin }) {
   return (
-    <nav className="fixed top-0 inset-x-0 z-50 flex items-center justify-between h-14 px-6 md:px-10 bg-black/55 backdrop-blur-xl border-b border-white/[0.06]">
+    <motion.nav
+      className="fixed top-0 inset-x-0 z-50 flex items-center justify-between h-14 px-6 md:px-10 bg-black/55 backdrop-blur-xl border-b border-white/[0.06]"
+      initial={{ y: -72, opacity: 0 }}
+      animate={{ y: 0, opacity: 1 }}
+      transition={{ type: 'spring', stiffness: 230, damping: 22, delay: 0.1 }}
+    >
       <span className="flex items-center gap-2.5 text-[15px] font-semibold tracking-tight text-white">
         <CubeMark /> Layerd
       </span>
@@ -131,38 +137,61 @@ function Nav({ onEnter }) {
           <a key={href} href={href} className="hover:text-white transition-colors duration-300">{label}</a>
         ))}
       </div>
-      <PillPrimary onClick={() => onEnter('citizen')}>Launch demo</PillPrimary>
-    </nav>
+      <PillPrimary onClick={() => openLogin('citizen')}>Launch demo</PillPrimary>
+    </motion.nav>
   )
 }
-function Hero({ onEnter }) {
+// cascading spring pop for the hero — each element overshoots slightly
+const heroPop = (delay, from = 0.82) => ({
+  initial: { opacity: 0, scale: from, y: 46 },
+  animate: { opacity: 1, scale: 1, y: 0 },
+  transition: { type: 'spring', stiffness: 250, damping: 18, delay },
+})
+
+function Hero({ openLogin }) {
   return (
     <header className="relative min-h-screen flex items-center justify-center overflow-hidden">
       <div className="hero-halo" />
-      <div className="hero-globe" aria-hidden="true">
+      <motion.div className="hero-globe" aria-hidden="true" {...heroPop(0.05, 0.7)}>
         <Suspense fallback={<div className="hero-globe-loading" />}>
           <HeroGlobe />
         </Suspense>
-      </div>
+      </motion.div>
       <motion.div
         className="relative z-10 flex flex-col items-center text-center px-6 pt-16"
-        initial={{ opacity: 0, y: 26 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 1.1, ease: EASE, delay: 0.15 }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.01, delay: 0.12 }}
       >
-        <p className="text-[11px] tracking-[0.24em] uppercase text-[#86868B]">SIH26095 · Smart India Hackathon 2026</p>
-        <h1 className="mt-6 text-[clamp(52px,8.5vw,110px)] leading-[1.01] font-bold tracking-[-0.04em] text-white">
+        <motion.p
+          className="text-[11px] tracking-[0.24em] uppercase text-[#86868B]"
+          {...heroPop(0.16, 0.9)}
+        >
+          SIH26095 · Smart India Hackathon 2026
+        </motion.p>
+        <motion.h1
+          className="mt-6 text-[clamp(52px,8.5vw,110px)] leading-[1.01] font-bold tracking-[-0.04em] text-white"
+          {...heroPop(0.24, 0.72)}
+        >
           One Parcel.<br />Every Dimension.
-        </h1>
-        <p className="mt-7 max-w-[640px] text-[#A1A1A6] text-[17px] md:text-[19px] leading-[1.65]">
+        </motion.h1>
+        <motion.p
+          className="mt-7 max-w-[640px] text-[#A1A1A6] text-[17px] md:text-[19px] leading-[1.65]"
+          {...heroPop(0.36, 0.9)}
+        >
           Layerd is a 3D cadastral system that generates unique spatial IDs for surface land
           parcels, multi-storey apartment units, and the infrastructure beneath them.
-        </p>
-        <div className="mt-11 flex gap-4 flex-wrap justify-center">
-          <PillPrimary onClick={() => onEnter('citizen')}>Launch the demo</PillPrimary>
+        </motion.p>
+        <motion.div className="mt-11 flex gap-4 flex-wrap justify-center" {...heroPop(0.48, 0.85)}>
+          <PillPrimary onClick={() => openLogin('citizen')}>Launch the demo</PillPrimary>
           <PillGhost href="#problem">Explore the system</PillGhost>
-        </div>
-        <p className="mt-9 text-[11px] tracking-[0.08em] text-[#86868B] font-mono">TN-02-6001-2345-6789 · G+4 · B1 · 15 units</p>
+        </motion.div>
+        <motion.p
+          className="mt-9 text-[11px] tracking-[0.08em] text-[#86868B] font-mono"
+          {...heroPop(0.56, 0.95)}
+        >
+          TN-02-6001-2345-6789 · G+4 · B1 · 15 units
+        </motion.p>
       </motion.div>
       <div className="absolute bottom-9 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-3">
         <span className="text-[10px] tracking-[0.24em] uppercase text-[#86868B]">Scroll</span>
@@ -329,7 +358,7 @@ function Architecture() {
   )
 }
 
-function FooterCta({ onEnter }) {
+function FooterCta({ openLogin }) {
   return (
     <footer className="px-6 pb-10">
       <div className="silver-line" />
@@ -342,7 +371,7 @@ function FooterCta({ onEnter }) {
             Layerd — built for SIH26095. Seed data from real OpenStreetMap footprints in Adyar, Chennai.
           </p>
           <div className="mt-10 flex gap-4 justify-center flex-wrap">
-            <PillPrimary onClick={() => onEnter('citizen')}>Launch the demo</PillPrimary>
+            <PillPrimary onClick={() => openLogin('citizen')}>Launch the demo</PillPrimary>
             <PillGhost href="https://github.com/">GitHub</PillGhost>
           </div>
         </Reveal>
@@ -357,20 +386,62 @@ function FooterCta({ onEnter }) {
   )
 }
 
-export default function Landing({ onEnter }) {
+export default function Landing({ onLogin }) {
   const landRef = useRef(null)
+  const [loginRole, setLoginRole] = useState(null) // login portal open with this role
+  const openLogin = (role) => setLoginRole(role || 'citizen')
+
+  // Esc closes the login portal
+  useEffect(() => {
+    if (!loginRole) return
+    const onKey = (e) => {
+      if (e.key === 'Escape') setLoginRole(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [loginRole])
+
   return (
     <LandCtx.Provider value={landRef}>
       <div className="land" ref={landRef}>
-        <Nav onEnter={onEnter} />
-        <Hero onEnter={onEnter} />
+        <Nav openLogin={openLogin} />
+        <Hero openLogin={openLogin} />
         <StatsBand />
         <ProblemPin />
         <Solution />
         <Features />
         <Architecture />
-        <FooterCta onEnter={onEnter} />
+        <FooterCta openLogin={openLogin} />
       </div>
+
+      {/* login portal — pops in over the landing page */}
+      <AnimatePresence>
+        {loginRole && (
+          <motion.div
+            className="login-portal-backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.22 }}
+            onClick={() => setLoginRole(null)}
+          >
+            <motion.div
+              className="login-portal"
+              initial={{ opacity: 0, scale: 0.72, y: 48 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.86, y: 28 }}
+              transition={{ type: 'spring', stiffness: 300, damping: 22 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Login
+                onLogin={onLogin}
+                onBack={() => setLoginRole(null)}
+                initialRole={loginRole}
+              />
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </LandCtx.Provider>
   )
 }
