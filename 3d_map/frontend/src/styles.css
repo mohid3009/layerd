@@ -1264,26 +1264,33 @@ input[type='file']::file-selector-button:hover { border-color: rgba(232, 232, 23
 .proposed-change .new-val { color: #ffb84d; font-weight: 600; }
 
 /* ---------- 3D ULPIN explorer ---------- */
-.ulpin-search {
-  width: 100%;
-  background: var(--panel2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  padding: 8px 10px;
-  font-family: inherit;
-  font-size: 13px;
-  outline: none;
-  margin-bottom: 8px;
-}
-.ulpin-search:focus { border-color: var(--border-strong); }
-.ulpin-list { max-height: 260px; overflow-y: auto; }
 .ulpin-floor-head {
   font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.14em;
   color: #86868b;
   margin: 10px 0 4px;
+}
+.ulpin-3d {
+  position: absolute;
+  inset: 0;
+  z-index: 1200;
+  background: #050505;
+  display: flex;
+  flex-direction: column;
+}
+.ulpin-3d-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-solid);
+}
+.ulpin-3d-stage {
+  flex: 1;
+  min-height: 0;
+  position: relative;
 }
 
 /* ---------- area grouping + session navigation ---------- */

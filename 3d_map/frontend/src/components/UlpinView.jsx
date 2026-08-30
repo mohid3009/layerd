@@ -3,6 +3,7 @@ import { Canvas } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import { getSavedBuildings, fetchUnits, generateUnits, deleteUnits } from '../api.js'
+import BuildingsMap from './BuildingsMap.jsx'
 
 const FH = 3 // storey height used by the generator (m)
 
@@ -54,7 +55,6 @@ export default function UlpinView({ session }) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState(null)
   const [err, setErr] = useState(null)
-  const [search, setSearch] = useState('')
 
   useEffect(() => {
     getSavedBuildings()
@@ -155,83 +155,67 @@ export default function UlpinView({ session }) {
     return [...m.entries()].sort((a, b) => a[0] - b[0])
   }, [units])
 
-  const filtered = buildings.filter((b) => {
-    const q = search.trim().toLowerCase()
-    if (!q) return true
-    const p = b.properties
-    return `${p.building_id} ${p.name || ''}`.toLowerCase().includes(q)
-  })
-
   return (
     <main className="workspace">
         <section className="viewport">
-          {dims && selId && (
-            <Canvas
-              key={selId}
-              camera={{
-                position: [0, Math.max(dims.w, dims.d) * 1.5, Math.max(dims.w, dims.d) * 1.7],
-                fov: 42,
-                near: 0.1,
-                far: 4000,
-              }}
-            >
-              <ambientLight intensity={0.85} />
-              <directionalLight position={[dims.w, dims.w * 2, dims.d]} intensity={0.9} />
-              <gridHelper args={[Math.max(dims.w, dims.d) * 4, 24, '#2c2c2c', '#1c1c1c']} />
-              {displayUnits.map((u) => (
-                <UnitMesh
-                  key={u.unit_ulpin}
-                  unit={u}
-                  w={dims.w}
-                  d={dims.d}
-                  fh={FH}
-                  color={floorColor(u.floor_index, maxFloor)}
-                  selected={selUlpin === u.unit_ulpin}
-                  onPick={(unit) => setSelUlpin(unit.unit_ulpin)}
-                />
-              ))}
-              <OrbitControls />
-            </Canvas>
-          )}
+          <BuildingsMap
+            features={buildings}
+            selectedId={selId}
+            onSelect={(bid) => selectBuilding(bid)}
+          />
           {!selId && (
-            <div className="lidar-empty muted">
-              <h3>3D ULPIN explorer</h3>
-              <p>choose a building from the sidebar — only that building is shown, with all of its sections, ULPINs and owners.</p>
+            <div className="map-note muted tiny">
+              click a building on the map to open its 3D ULPIN unit tree
+            </div>
+          )}
+          {selId && dims && (
+            <div className="ulpin-3d">
+              <div className="ulpin-3d-bar">
+                <button className="btn tiny" onClick={() => setSelId(null)}>← choose on map</button>
+                <span className="mono tiny">{selected?.properties.name || selId}</span>
+                {baseUlpin && <span className="muted tiny mono">base {baseUlpin}</span>}
+              </div>
+              <div className="ulpin-3d-stage">
+                <Canvas
+                  camera={{
+                    position: [0, Math.max(dims.w, dims.d) * 1.5, Math.max(dims.w, dims.d) * 1.7],
+                    fov: 42,
+                    near: 0.1,
+                    far: 4000,
+                  }}
+                >
+                  <ambientLight intensity={0.85} />
+                  <directionalLight position={[dims.w, dims.w * 2, dims.d]} intensity={0.9} />
+                  <gridHelper args={[Math.max(dims.w, dims.d) * 4, 24, '#2c2c2c', '#1c1c1c']} />
+                  {displayUnits.map((u) => (
+                    <UnitMesh
+                      key={u.unit_ulpin}
+                      unit={u}
+                      w={dims.w}
+                      d={dims.d}
+                      fh={FH}
+                      color={floorColor(u.floor_index, maxFloor)}
+                      selected={selUlpin === u.unit_ulpin}
+                      onPick={(unit) => setSelUlpin(unit.unit_ulpin)}
+                    />
+                  ))}
+                  <OrbitControls />
+                </Canvas>
+              </div>
             </div>
           )}
         </section>
 
         <aside className="sidebar">
-          <div className="panel-section">
-            <h3>buildings</h3>
-            <input
-              className="ulpin-search"
-              placeholder="search buildings…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            <div className="ulpin-list">
-              {filtered.map((b) => {
-                const p = b.properties
-                return (
-                  <div
-                    key={p.building_id}
-                    className={`nav-row ${selId === p.building_id ? 'active' : ''}`}
-                    onClick={() => selectBuilding(p.building_id)}
-                  >
-                    <span className="session-label" title={p.building_id}>
-                      {p.name || p.building_id}
-                    </span>
-                    <span className="muted tiny">
-                      {p.stories || 1} fl{p.basements ? ` · ${p.basements} B` : ''}
-                    </span>
-                  </div>
-                )
-              })}
-              {!filtered.length && <p className="muted tiny">no matches</p>}
+          {!selId && (
+            <div className="panel-section">
+              <h3>3D ULPIN explorer</h3>
+              <p className="muted tiny">
+                click any building on the map — only that building opens in 3D with all of its
+                sections, ULPINs, owners and details.
+              </p>
             </div>
-          </div>
-
+          )}
           {selected && (
             <div className="panel-section">
               <h3>base ULPIN</h3>
