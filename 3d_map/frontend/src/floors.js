@@ -24,31 +24,58 @@ export function floorColor(i, n) {
   return hslToHex(216, 68, 30 + t * 45)
 }
 
+// basement level B1 (lightest grey) → deepest level (darkest grey)
+export function basementColor(i, n) {
+  const t = n <= 1 ? 0 : i / (n - 1)
+  return hslToHex(240, 8, 38 - t * 16)
+}
+
 // Expand building features into render slices. Height is divided evenly
 // across storeys. Slices stack from the map plane (there is no terrain
 // source, so fill-extrusion-base is a render offset, not an elevation —
 // using the real ground_z would make buildings float in mid-air).
+// Buildings with `basements` levels additionally get one grey slice per
+// basement hanging BELOW the map plane (negative base/top), each one
+// storey-height deep. Single-storey buildings keep their status colour for
+// the above-ground part, so the measured/assumed legend stays truthful.
 export function floorSlices(features) {
   const out = []
   for (const f of features) {
     if (!f.geometry) continue
     const p = f.properties
     const stories = Math.max(1, parseInt(p.stories) || 1)
+    const basements = Math.max(0, parseInt(p.basements) || 0)
     const height = p.height_m || 0
-    if (stories <= 1 || !height) {
+    if (!height || (stories <= 1 && basements <= 0)) {
       out.push(f)
       continue
     }
     const slice = height / stories
-    for (let i = 0; i < stories; i++) {
+    if (stories <= 1) {
+      out.push(f)
+    } else {
+      for (let i = 0; i < stories; i++) {
+        out.push({
+          ...f,
+          properties: {
+            ...p,
+            floor: i + 1,
+            base_m: +(i * slice).toFixed(2),
+            height_m: +((i + 1) * slice).toFixed(2),
+            color: floorColor(i, stories),
+          },
+        })
+      }
+    }
+    for (let k = 1; k <= basements; k++) {
       out.push({
         ...f,
         properties: {
           ...p,
-          floor: i + 1,
-          base_m: +(i * slice).toFixed(2),
-          height_m: +((i + 1) * slice).toFixed(2),
-          color: floorColor(i, stories),
+          floor: -k, // B1, B2, … below ground
+          base_m: +(-k * slice).toFixed(2),
+          height_m: +(-(k - 1) * slice).toFixed(2),
+          color: basementColor(k - 1, basements),
         },
       })
     }

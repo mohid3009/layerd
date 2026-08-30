@@ -14,6 +14,7 @@ Pipeline (modelled on lidar/lidar.py):
        - NO lidar points above the footprint -> assume a 1-storey building
 """
 
+import copy
 import json
 import math
 import time
@@ -142,6 +143,26 @@ def load_laz_points(fileobj, epsg=None):
     return to_wgs84(las, points, epsg=epsg)
 
 
+def _wgs84_transformer(las, epsg, what):
+    """
+    Build a pyproj transformer from the LAS's native horizontal CRS (or an
+    explicit epsg) to WGS84. Raises a friendly LidarExtractionError when no
+    CRS is available. `what` names the thing being transformed for the error.
+    """
+    crs, _ = read_crs(las)
+    hcrs = _horizontal_crs(crs)
+    if hcrs is not None:
+        return pyproj.Transformer.from_crs(hcrs, "EPSG:4326", always_xy=True)
+    if epsg:
+        return pyproj.Transformer.from_crs(
+            f"EPSG:{int(epsg)}", "EPSG:4326", always_xy=True
+        )
+    raise LidarExtractionError(
+        f"no CRS available to interpret {what} — choose WGS84, "
+        "pass an epsg, or use a .laz with an embedded CRS"
+    )
+
+
 def transform_bbox_to_wgs84(las, bbox, epsg=None):
     """
     Transform a bbox given in the LAS's native CRS (or an explicit epsg) into
@@ -149,24 +170,57 @@ def transform_bbox_to_wgs84(las, bbox, epsg=None):
     since a projected rectangle is generally not a rectangle in WGS84.
     Returns (xmin, ymin, xmax, ymax) in EPSG:4326 degrees.
     """
-    crs, _ = read_crs(las)
-    hcrs = _horizontal_crs(crs)
-    if hcrs is not None:
-        transformer = pyproj.Transformer.from_crs(hcrs, "EPSG:4326", always_xy=True)
-    elif epsg:
-        transformer = pyproj.Transformer.from_crs(
-            f"EPSG:{int(epsg)}", "EPSG:4326", always_xy=True
-        )
-    else:
-        raise LidarExtractionError(
-            "no CRS available to interpret the bounding box — choose WGS84, "
-            "pass an epsg, or use a .laz with an embedded CRS"
-        )
+    transformer = _wgs84_transformer(las, epsg, "the bounding box")
     xmin, ymin, xmax, ymax = bbox
     lons, lats = transformer.transform(
         (xmin, xmax, xmin, xmax), (ymin, ymin, ymax, ymax)
     )
     return min(lons), min(lats), max(lons), max(lats)
+
+
+def _reproject_coords(coords, transformer):
+    """
+    Recursively reproject every [x, y, ...] vertex of a GeoJSON coordinate
+    structure (Position → ring → polygon → multipolygon nesting).
+    """
+    if isinstance(coords, list):
+        if coords and isinstance(coords[0], (int, float)):
+            lon, lat = transformer.transform(coords[0], coords[1])
+            return [lon, lat, *coords[2:]]
+        return [_reproject_coords(c, transformer) for c in coords]
+    return coords
+
+
+def transform_geojson_to_wgs84(geojson, las, epsg=None):
+    """
+    Reproject the vertices of a GeoJSON FeatureCollection given in the LAS's
+    native CRS (or an explicit epsg) into WGS84 lon/lat. Used when GIS parcel
+    footprints are exported in the same projected CRS/units as the .laz —
+    the document is deep-copied and only coordinates (plus a FeatureCollection-
+    level bbox, if present) are touched; properties are left untouched.
+    """
+    transformer = _wgs84_transformer(las, epsg, "the footprint GeoJSON")
+
+    out = copy.deepcopy(geojson)
+    items = out.get("features") if isinstance(out, dict) else None
+    if items is None:
+        items = [out] if isinstance(out, dict) else []
+    for f in items:
+        geom = f.get("geometry") if isinstance(f, dict) else None
+        if not geom:
+            continue
+        if "coordinates" in geom:
+            geom["coordinates"] = _reproject_coords(geom["coordinates"], transformer)
+        for sub in geom.get("geometries") or []:
+            if "coordinates" in sub:
+                sub["coordinates"] = _reproject_coords(sub["coordinates"], transformer)
+
+    # FeatureCollection-level bbox, if present (x0, y0, x1, y1)
+    if isinstance(out, dict) and isinstance(out.get("bbox"), list) and len(out["bbox"]) == 4:
+        x0, y0, x1, y1 = out["bbox"]
+        lons, lats = transformer.transform((x0, x1, x0, x1), (y0, y0, y1, y1))
+        out["bbox"] = [min(lons), min(lats), max(lons), max(lats)]
+    return out
 
 
 def bbox_to_geojson(xmin, ymin, xmax, ymax):
@@ -326,6 +380,80 @@ def extract_building_heights(geojson, points_wgs84, floor_height=3.0):
     stats = {
         "buildings": len(features),
         "from_lidar": n_lidar,
+        "assumed_1_story": n_assumed,
+        "max_height_m": round(max(heights), 2) if heights else 0,
+        "mean_height_m": round(sum(heights) / len(heights), 2) if heights else 0,
+        "floor_height_m": floor_height,
+    }
+    return fc, stats
+
+
+def heights_from_attributes(geojson, floor_height=3.0):
+    """
+    No-LiDAR path: derive building heights purely from footprint attributes —
+    an explicit `height` tag first, then `building:levels` × storey height,
+    otherwise assume a 1-storey building. Returns (featurecollection, stats)
+    with the same shape as extract_building_heights so the rest of the
+    pipeline (PostGIS save, map rendering, editing) is unchanged.
+    """
+    polys = _collect_polygons(geojson)
+    if not polys:
+        raise LidarExtractionError("no Polygon features found in the footprint GeoJSON")
+
+    features = []
+    n_height = 0
+    n_levels = 0
+    n_assumed = 0
+    heights = []
+
+    for idx, label, geom, props in polys:
+        raw_height = props.get("osm_height") or props.get("height")
+        raw_levels = props.get("building_levels") or props.get("building:levels")
+
+        height = None
+        stories = 1
+        source = "assumed-1-story"
+        try:  # explicit height tag wins ("12", "12.5", "12 m")
+            height = float(str(raw_height).rstrip("m").strip())
+            stories = max(1, int(round(height / floor_height)))
+            source = "tag-height"
+            n_height += 1
+        except (TypeError, ValueError):
+            pass
+        if height is None:
+            try:  # fall back to a storey count
+                stories = max(1, int(round(float(str(raw_levels).strip()))))
+                height = stories * floor_height
+                source = "tag-levels"
+                n_levels += 1
+            except (TypeError, ValueError):
+                height = floor_height
+                n_assumed += 1
+
+        heights.append(height)
+        features.append(
+            {
+                "type": "Feature",
+                "properties": {
+                    **props,
+                    "building_id": label,
+                    "height_m": round(height, 2),
+                    "stories": stories,
+                    "ground_z": None,
+                    "roof_z": None,
+                    "lidar_points": 0,
+                    "height_source": source,
+                    "color": "#4da3ff" if source != "assumed-1-story" else "#ffb84d",
+                },
+                "geometry": geom.__geo_interface__,
+            }
+        )
+
+    fc = {"type": "FeatureCollection", "features": features}
+    stats = {
+        "buildings": len(features),
+        "from_height_tag": n_height,
+        "from_levels": n_levels,
         "assumed_1_story": n_assumed,
         "max_height_m": round(max(heights), 2) if heights else 0,
         "mean_height_m": round(sum(heights) / len(heights), 2) if heights else 0,

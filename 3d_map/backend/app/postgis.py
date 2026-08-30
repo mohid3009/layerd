@@ -160,6 +160,40 @@ def save_session(session_id, label=None, mode=None, crs=None):
             )
 
 
+def delete_building(building_id):
+    """Delete a single building row; returns True if a row was removed."""
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM lidar_buildings WHERE building_id = %s", (building_id,))
+            return cur.rowcount > 0
+
+
+def set_edit_status(building_id, status, entry):
+    """
+    Set props.edit_status on one building and append an audit entry to its
+    edit_history — the registrar-confirmation workflow.
+    """
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT props FROM lidar_buildings WHERE building_id = %s", (building_id,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f"building {building_id} not found")
+            props = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+            props["edit_status"] = status
+            hist = props.get("edit_history")
+            if not isinstance(hist, list):
+                hist = []
+            if isinstance(entry, dict) and entry:
+                hist.append(entry)
+            props["edit_history"] = hist
+            cur.execute(
+                "UPDATE lidar_buildings SET props = %s::jsonb, updated_at = now() "
+                "WHERE building_id = %s",
+                (json.dumps(props), building_id),
+            )
+
+
 def save_buildings(featurecollection, session_id, label=None, mode=None, crs=None, reconcile=True):
     """
     Upsert every Feature of the FeatureCollection into the given scan session.

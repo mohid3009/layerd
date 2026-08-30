@@ -52,7 +52,7 @@ def startup():
 
 @app.post("/lidar/extract/start")
 async def start_extraction(
-    laz: UploadFile = File(...),
+    laz: UploadFile | None = File(None),
     mode: str = Form("osm"),
     footprints: UploadFile | None = File(None),
     xmin: float | None = Form(None),
@@ -60,6 +60,7 @@ async def start_extraction(
     xmax: float | None = Form(None),
     ymax: float | None = Form(None),
     bbox_crs: str = Form("laz"),  # 'laz' = bbox in the .laz's native CRS
+    footprints_crs: str = Form("wgs84"),  # 'laz' = footprint GeoJSON in the .laz's native CRS
     epsg: int | None = Form(None),
     floor_height: float = Form(3.0),
 ):
@@ -67,7 +68,10 @@ async def start_extraction(
     Start a LiDAR extraction job and return its id immediately. Poll
     GET /lidar/extract/{job_id} for step-wise progress and the final result.
     mode: 'osm' (footprints fetched for the xmin/ymin/xmax/ymax bbox) or
-    'footprints' (footprints uploaded as a GeoJSON file).
+    'footprints' (footprints uploaded as a GeoJSON file). bbox_crs /
+    footprints_crs = 'laz' means the given coordinates are in the .laz's
+    native projected CRS (transformed to WGS84 server-side); 'wgs84' means
+    plain lon/lat degrees.
     """
     import threading
 
@@ -78,11 +82,25 @@ async def start_extraction(
     if floor_height <= 0:
         raise HTTPException(400, "floor_height must be positive")
 
+    # read uploads up-front; an empty part counts as "not provided" (some
+    # FastAPI/python-multipart combos reject a multipart body in which an
+    # optional file field is entirely absent, so the frontend sends an empty
+    # placeholder part instead)
+    laz_bytes = await laz.read() if laz else None
+    footprints_bytes = await footprints.read() if footprints else None
+    if laz_bytes == b"":
+        laz_bytes = None
+    if footprints_bytes == b"":
+        footprints_bytes = None
+    has_lidar = bool(laz_bytes)  # without a .laz, heights come from attributes
+
     if mode == "osm":
         if None in (xmin, ymin, xmax, ymax):
             raise HTTPException(400, "bbox required: xmin, ymin, xmax, ymax")
         if xmin >= xmax or ymin >= ymax:
             raise HTTPException(400, "invalid bbox: need xmin < xmax and ymin < ymax")
+        if not has_lidar and bbox_crs == "laz":
+            bbox_crs = "wgs84"  # no .laz CRS to borrow — bbox must be WGS84
         if bbox_crs not in ("laz", "wgs84"):
             raise HTTPException(400, "bbox_crs must be 'laz' or 'wgs84'")
         if bbox_crs == "wgs84" and not (
@@ -98,15 +116,19 @@ async def start_extraction(
     else:
         if footprints is None:
             raise HTTPException(400, "footprints file required for mode 'footprints'")
+        if footprints_crs not in ("laz", "wgs84"):
+            raise HTTPException(400, "footprints_crs must be 'laz' or 'wgs84'")
+        if footprints_crs == "laz" and not has_lidar:
+            raise HTTPException(
+                400,
+                "footprint coordinates set to 'same as .laz CRS' but no .laz was uploaded",
+            )
         bbox = None
 
-    laz_bytes = await laz.read()
-    footprints_bytes = await footprints.read() if footprints else None
-
-    job = create_job(mode)
+    job = create_job(mode, has_lidar=has_lidar)
     thread = threading.Thread(
         target=run_extraction,
-        args=(job, mode, laz_bytes, footprints_bytes, bbox, bbox_crs, epsg, float(floor_height)),
+        args=(job, mode, laz_bytes, footprints_bytes, bbox, bbox_crs, footprints_crs, epsg, float(floor_height)),
         daemon=True,
     )
     thread.start()
@@ -165,6 +187,66 @@ def lidar_sync_buildings(payload: dict = Body(...)):
     session_id = payload.get("session_id") or uuid.uuid4().hex[:12]
     count = save_buildings(fc, session_id=session_id, label=payload.get("label"), reconcile=True)
     return {"status": "ok", "session_id": session_id, "count": count}
+
+
+@app.delete("/lidar/buildings/{building_id}")
+def lidar_delete_building(building_id: str):
+    """Delete a single building (surveyor/registrar editing)."""
+    from .postgis import delete_building
+
+    if not delete_building(building_id):
+        raise HTTPException(404, f"building {building_id} not found")
+    return {"status": "deleted", "building_id": building_id}
+
+
+@app.get("/lidar/regions")
+def lidar_region(lat: float, lon: float):
+    """Reverse-geocode a scan centroid to {country, region} for the grouping UI."""
+    from .regions import lookup_region
+
+    return lookup_region(lat, lon)
+
+
+@app.post("/lidar/buildings/update")
+def lidar_update_building(payload: dict = Body(...)):
+    """
+    Upsert ONE (possibly edited) building feature without touching the rest of
+    its session — used by the dashboard editor. The feature's properties must
+    carry session_id (fetch_buildings includes it).
+    """
+    from .postgis import save_buildings
+
+    fc = payload.get("buildings")
+    feature = fc.get("features", [None])[0] if isinstance(fc, dict) else None
+    props = (feature or {}).get("properties") or {}
+    if not feature or not props.get("building_id"):
+        raise HTTPException(400, "body must contain buildings.features[0] with building_id")
+    session_id = props.get("session_id") or payload.get("session_id")
+    if not session_id:
+        raise HTTPException(400, "session_id missing (not in feature properties)")
+    save_buildings({"type": "FeatureCollection", "features": [feature]}, session_id, reconcile=False)
+    return {"status": "ok", "building_id": props.get("building_id")}
+
+
+@app.post("/lidar/buildings/confirm")
+def lidar_confirm_edit(payload: dict = Body(...)):
+    """
+    Registrar confirmation workflow: set edit_status ('confirmed' or 'pending')
+    on one building and append the provided audit entry to its edit_history.
+    """
+    from .postgis import set_edit_status
+
+    building_id = payload.get("building_id")
+    status = payload.get("status", "confirmed")
+    if not building_id:
+        raise HTTPException(400, "building_id required")
+    if status not in ("confirmed", "pending"):
+        raise HTTPException(400, "status must be 'confirmed' or 'pending'")
+    try:
+        set_edit_status(building_id, status, payload.get("entry"))
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"status": "ok", "building_id": building_id, "edit_status": status}
 
 
 @app.post("/lidar/buildings/clear")

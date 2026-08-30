@@ -68,6 +68,84 @@ rendered with `fill-extrusion` (blue = LiDAR-measured, orange = assumed,
 - **edit** — set the **number of floors** directly (height auto-syncs as
   floors × storey height) or type an exact height in metres; the extrusion
   updates live and the building turns green
+- **+ basement / − basement** — add or remove **below-ground levels** on any
+  building (each one storey-height deep, rendered below the map plane in grey
+  with its own B1/B2… slice); stored as `basements` in the building properties
+  and persisted to PostGIS / the GeoJSON export like every other edit
+- **edit footprint** — reshape the selected building's outline by **dragging
+  its corner handles** (orange preview while dragging); each drag commits on
+  mouse release
+- **who can edit** — **surveyor or registrar** (citizens are view-only); the
+  dashboard map highlights the selected building and shows the same data
+
+### Change history (audit trail)
+
+Every edit — building created, height/storeys/basements changed, footprint
+reshaped — is appended to the building's `edit_history` property with
+**who** (name + role) made it, **what** changed (e.g. `height 12→15 m`,
+`basements 0→2`, `footprint adjusted (4 corners)`) and **when**. The trail is
+shown in the **building details** panel ("change history", both in the scan
+view and the dashboard) and is persisted to PostGIS + the GeoJSON export.
+
+### Edit confirmation workflow (surveyor → registrar)
+
+Buildings can be edited from **both** the LiDAR scan view and the main
+dashboard (click a building → **edit**; surveyor or registrar). Every edit is
+appended to the building's change history and carries a confirmation status:
+
+- **surveyor** edits → `edit_status: pending` — the dashboard shows a
+  **⚑ N edits awaiting confirmation** badge (for the registrar) plus a
+  **pending confirmations** list; the details panel shows "⏳ pending".
+- **registrar** → opens the dashboard, clicks a pending building (or a row in
+  the pending list) and presses **✓ confirm edit** — status flips to
+  "✓ confirmed" and a `edit confirmed by registrar` entry is added to the
+  history. Registrar's own edits are confirmed automatically.
+
+All of it persists in PostGIS (`props.edit_status` / `props.edit_history`) via
+`POST /lidar/buildings/update` (single-building upsert) and
+`POST /lidar/buildings/confirm`.
+
+### Scans grouped by country & region
+
+The dashboard sidebar's **scans** tab groups saved scans hierarchically:
+**country → region → individual scans**. Each scan session is located by
+reverse-geocoding its centroid (server-side via Nominatim, cached in memory
+for a week — `GET /lidar/regions`). Click a country to show only its
+buildings, then a region, then a scan to zoom right in; "←" breadcrumbs take
+you back up a level. Surveyors/registrars can still delete sessions (✕) at
+the scan level. While locations resolve, the group shows "⏳ locating…";
+unresolvable points land under "Unknown area".
+
+### Registrar notifications tab
+
+The registrar's dashboard sidebar has two tabs: **scan sessions** and
+**⚑ confirmations (n)**. The confirmations tab lists every building with a
+pending edit; clicking a notification selects the building on the map (its
+session is auto-ticked if hidden) and the details panel shows a highlighted
+**proposed change** block — struck-through original values next to the
+proposed ones — plus the **✓ confirm edit** button. Pending buildings are
+outlined with an **amber dashed line** on the dashboard map.
+
+### Deleting + redrawing footprints (surveyor / registrar)
+
+- **delete** — the details panel on the dashboard (and the scan view) has a
+  **delete** button that removes the building from PostGIS
+  (`DELETE /lidar/buildings/{id}`) and from the working set.
+- **free-draw footprint** — with a building selected, click **✏ free-draw
+  footprint** (dashboard map-controls, or **redraw footprint** in the scan
+  view) and click the corners of the new outline — as many points as you
+  like. Close it by clicking the first point again, double-clicking, or
+  pressing **Enter** (**Esc** cancels). The new geometry replaces the old one
+  and is recorded as `footprint redrawn (n corners)` in the history, marked
+  pending registrar confirmation for surveyors (registrar edits are
+  auto-confirmed). For small tweaks, **edit footprint** (drag the corner
+  handles) also works in the scan view.
+
+### Basement indication on the map
+
+Buildings with basements get a **dashed grey ground outline** plus the grey
+below-ground extrusion slices; the details panel shows a **B×n** badge next to
+the title and the legend/selected line shows `B×n` as well.
 - **reset** — restore that building's original LiDAR-measured values
 - **delete** — remove a building
 - **+ add building** (map toolbar) — draw a **freeform footprint**: click each corner

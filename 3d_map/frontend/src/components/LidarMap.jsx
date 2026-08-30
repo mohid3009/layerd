@@ -16,16 +16,23 @@ const TILES = {
     attr: '© Esri, HERE, Garmin, FAO, NOAA, USGS · © OpenStreetMap contributors',
     maxzoom: 16,
   },
+  light: {
+    url: 'https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+    attr: '© Esri, HERE, Garmin, FAO, NOAA, USGS · © OpenStreetMap contributors',
+    maxzoom: 16,
+  },
 }
 
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 
-export default function LidarMap({ canEdit = true }) {
+export default function LidarMap({ canEdit = true, user = null }) {
   const [lazFile, setLazFile] = useState(null)
+  const [hasLidar, setHasLidar] = useState(true) // "LiDAR data available?" toggle
   const [footprintsFile, setFootprintsFile] = useState(null)
   const [sourceMode, setSourceMode] = useState('osm') // 'osm' | 'footprints'
   const [bbox, setBbox] = useState({ xmin: '', ymin: '', xmax: '', ymax: '' })
   const [bboxCrs, setBboxCrs] = useState('laz') // 'laz' = same CRS as the .laz file
+  const [fpCrs, setFpCrs] = useState('wgs84') // footprint GeoJSON coords: 'laz' = same CRS as the .laz file
   const [epsg, setEpsg] = useState('')
   const [floorHeight, setFloorHeight] = useState('3.0')
   const [busy, setBusy] = useState(false)
@@ -36,6 +43,8 @@ export default function LidarMap({ canEdit = true }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(null) // { height } while editing
   const [drawMode, setDrawMode] = useState(false)
+  const [footprintEdit, setFootprintEdit] = useState(false) // reshape the selected footprint
+  const [redrawMode, setRedrawMode] = useState(false) // replace the selected footprint with a fresh polygon
   const [tileStyle, setTileStyle] = useState('satellite')
   const [job, setJob] = useState(null) // { state, steps, error, result }
   const [postgisMsg, setPostgisMsg] = useState(null)
@@ -47,11 +56,17 @@ export default function LidarMap({ canEdit = true }) {
   const featuresRef = useRef([])
   const originalsRef = useRef(new Map()) // building_id -> original feature
   const drawModeRef = useRef(false)
+  const fpEditRef = useRef(null) // { id, ring } while reshaping a footprint
+  const dragIdxRef = useRef(null) // index of the vertex being dragged
+  const commitFootprintRef = useRef(() => {})
+  const commitRedrawRef = useRef(() => {})
+  const redrawTargetRef = useRef(null) // building_id whose footprint is being redrawn
   const drawPtsRef = useRef([]) // committed freeform vertices [lng, lat]
   const firstPixRef = useRef(null) // pixel pos of first vertex (click-to-close)
   const finishFreeformRef = useRef(() => {})
   const dirtyRef = useRef(false) // unsaved manual edits?
   const syncTimerRef = useRef(null)
+  const tileStyleRef = useRef('satellite') // current tile style (read by map load)
   const sessionIdRef = useRef(null) // PostGIS scan session of the current job
   const floorHRef = useRef(3.0)
   const addBuildingRef = useRef(() => {})
@@ -59,6 +74,7 @@ export default function LidarMap({ canEdit = true }) {
   const stats = result?.stats ?? null
   const hasData = features.length > 0
   const floorH = parseFloat(floorHeight) || 3.0
+  const lazBboxUnits = hasLidar && bboxCrs === 'laz' // bbox inputs shown in .laz projected units
   floorHRef.current = floorH
   featuresRef.current = features
 
@@ -87,7 +103,7 @@ export default function LidarMap({ canEdit = true }) {
 
   // ── Upload + extract (start job, then poll step-wise progress) ─────────────
   const onExtract = async () => {
-    if (!lazFile || busy) return
+    if (busy || (hasLidar && !lazFile)) return
     if (sourceMode === 'osm' && !bboxValid) {
       setErr('enter a valid bounding box: xmin < xmax and ymin < ymax')
       return
@@ -105,23 +121,34 @@ export default function LidarMap({ canEdit = true }) {
     setJob({
       state: 'running',
       error: null,
-      steps: [
-        { key: 'load', label: 'Reading LiDAR point cloud', state: 'pending' },
-        { key: 'reproject', label: 'Reprojecting to WGS84', state: 'pending' },
-        {
-          key: 'footprints',
-          label: sourceMode === 'osm' ? 'Fetching building footprints' : 'Parsing footprint GeoJSON',
-          state: 'pending',
-        },
-        { key: 'measure', label: 'Measuring heights from LiDAR', state: 'pending' },
-        { key: 'save', label: 'Saving to PostGIS', state: 'pending' },
-      ],
+      steps: hasLidar
+        ? [
+            { key: 'load', label: 'Reading LiDAR point cloud', state: 'pending' },
+            { key: 'reproject', label: 'Reprojecting to WGS84', state: 'pending' },
+            {
+              key: 'footprints',
+              label: sourceMode === 'osm' ? 'Fetching building footprints' : 'Parsing footprint GeoJSON',
+              state: 'pending',
+            },
+            { key: 'measure', label: 'Measuring heights from LiDAR', state: 'pending' },
+            { key: 'save', label: 'Saving to PostGIS', state: 'pending' },
+          ]
+        : [
+            {
+              key: 'footprints',
+              label: sourceMode === 'osm' ? 'Fetching building footprints' : 'Parsing footprint GeoJSON',
+              state: 'pending',
+            },
+            { key: 'measure', label: 'Deriving heights from attributes', state: 'pending' },
+            { key: 'save', label: 'Saving to PostGIS', state: 'pending' },
+          ],
     })
     try {
-      const { job_id } = await startExtraction(lazFile, {
+      const { job_id } = await startExtraction(hasLidar ? lazFile : null, {
         mode: sourceMode,
         bbox,
-        bboxCrs,
+        bboxCrs: hasLidar ? bboxCrs : 'wgs84',
+        footprintCrs: hasLidar ? fpCrs : 'wgs84',
         footprintsFile,
         epsg: epsg.trim() || null,
         floorHeight: parseFloat(floorHeight) || 3.0,
@@ -162,6 +189,17 @@ export default function LidarMap({ canEdit = true }) {
   }
 
   const markDirty = () => { dirtyRef.current = true }
+
+  // audit entry for the change history shown in the details panel
+  const editEntry = (change) => ({
+    at: new Date().toISOString(),
+    by: user?.name ?? 'unknown',
+    role: user?.role ?? '—',
+    change,
+  })
+
+  // surveyor edits wait for registrar confirmation; registrar edits are final
+  const newEditStatus = () => (user?.role === 'registrar' ? 'confirmed' : 'pending')
 
   // auto-sync manual edits to PostGIS (debounced) — surveyors only
   useEffect(() => {
@@ -206,12 +244,17 @@ export default function LidarMap({ canEdit = true }) {
           lidar_points: 0,
           height_source: 'manual',
           color: '#2fbf8f',
+          original_height_m: h,
+          original_stories: 1,
+          original_basements: 0,
+          edit_status: newEditStatus(),
+          edit_history: [editEntry('building created (manual footprint)')],
         },
         geometry: { type: 'Polygon', coordinates: [ring] },
       },
     ])
     setSelectedId(id)
-    setDraft({ height: h, floors: 1 })
+    setDraft({ height: h, floors: 1, basements: 0 })
     setEditing(true)
     setDrawMode(false)
   }
@@ -224,36 +267,78 @@ export default function LidarMap({ canEdit = true }) {
     drawPtsRef.current = []
     firstPixRef.current = null
     mapRef.current?.getSource('draft')?.setData(EMPTY_FC)
+    if (redrawTargetRef.current) {
+      // redraw mode: replace the target building's footprint
+      commitRedrawRef.current(ring)
+      redrawTargetRef.current = null
+      setRedrawMode(false)
+      return
+    }
     addBuildingRef.current(ring)
   }
   finishFreeformRef.current = finishFreeform
 
   const saveEdit = () => {
     const stories = Math.max(1, parseInt(draft?.floors) || 1)
+    const basements = Math.max(0, parseInt(draft?.basements) || 0)
     const h = Math.max(0.5, parseFloat(draft?.height) || stories * floorHRef.current)
-    markDirty()
     setFeatures((prev) =>
       prev.map((f) => {
         if (f.properties.building_id !== selectedId) return f
         const p = f.properties
+        // record what actually changed for the audit trail
+        const changes = []
+        if (stories !== p.stories) changes.push(`storeys ${p.stories}→${stories}`)
+        if (basements !== (p.basements || 0)) changes.push(`basements ${p.basements || 0}→${basements}`)
+        if (h !== p.height_m) changes.push(`height ${p.height_m}→${h} m`)
+        if (!changes.length) return f
+        markDirty()
         return {
           ...f,
           properties: {
             ...p,
             original_height_m: p.original_height_m ?? p.height_m,
             original_stories: p.original_stories ?? p.stories,
+            original_basements: p.original_basements ?? (p.basements || 0),
             original_height_source: p.original_height_source ?? p.height_source,
             height_m: h,
             stories,
+            basements,
             roof_z: p.ground_z != null ? +(p.ground_z + h).toFixed(2) : p.roof_z,
             height_source: p.height_source === 'manual' ? 'manual' : 'edited',
             color: '#2fbf8f',
+            edit_status: newEditStatus(),
+            edit_history: [...(p.edit_history || []), editEntry(changes.join(', '))],
           },
         }
       }),
     )
     setEditing(false)
     setDraft(null)
+  }
+
+  // replace the selected building's footprint with a freshly drawn polygon
+  commitRedrawRef.current = (ring) => {
+    const bid = redrawTargetRef.current
+    if (!bid) return
+    markDirty()
+    setFeatures((prev) =>
+      prev.map((f) => {
+        if (f.properties.building_id !== bid) return f
+        const p = f.properties
+        return {
+          ...f,
+          geometry: { type: 'Polygon', coordinates: [ring] },
+          properties: {
+            ...p,
+            height_source: p.height_source === 'manual' ? 'manual' : 'edited',
+            color: '#2fbf8f',
+            edit_status: newEditStatus(),
+            edit_history: [...(p.edit_history || []), editEntry(`footprint redrawn (${ring.length - 1} corners)`)],
+          },
+        }
+      }),
+    )
   }
 
   const resetBuilding = () => {
@@ -275,6 +360,59 @@ export default function LidarMap({ canEdit = true }) {
     setSelectedId(null)
     setEditing(false)
     setDraft(null)
+  }
+
+  // add/remove below-ground (basement) levels — above-ground height is
+  // untouched; each level is one storey-height deep
+  const changeBasements = (delta) => {
+    setFeatures((prev) =>
+      prev.map((f) => {
+        if (f.properties.building_id !== selectedId) return f
+        const p = f.properties
+        const basements = Math.max(0, (parseInt(p.basements) || 0) + delta)
+        if (basements === (p.basements || 0)) return f // e.g. − at zero — nothing to record
+        markDirty()
+        return {
+          ...f,
+          properties: {
+            ...p,
+            original_height_m: p.original_height_m ?? p.height_m,
+            original_stories: p.original_stories ?? p.stories,
+            original_basements: p.original_basements ?? (p.basements || 0),
+            original_height_source: p.original_height_source ?? p.height_source,
+            basements,
+            height_source: p.height_source === 'manual' ? 'manual' : 'edited',
+            color: '#2fbf8f',
+            edit_status: newEditStatus(),
+            edit_history: [...(p.edit_history || []), editEntry(`basements ${p.basements || 0}→${basements}`)],
+          },
+        }
+      }),
+    )
+  }
+
+  // commit a reshaped footprint (called on drag end by the map handlers)
+  commitFootprintRef.current = () => {
+    const fp = fpEditRef.current
+    if (!fp) return
+    markDirty()
+    setFeatures((prev) =>
+      prev.map((f) => {
+        if (f.properties.building_id !== fp.id) return f
+        const p = f.properties
+        return {
+          ...f,
+          geometry: { type: 'Polygon', coordinates: [[...fp.ring, fp.ring[0]]] },
+          properties: {
+            ...p,
+            height_source: p.height_source === 'manual' ? 'manual' : 'edited',
+            color: '#2fbf8f',
+            edit_status: newEditStatus(),
+            edit_history: [...(p.edit_history || []), editEntry(`footprint adjusted (${fp.ring.length} corners)`)],
+          },
+        }
+      }),
+    )
   }
 
   const resetAll = () => {
@@ -306,12 +444,50 @@ export default function LidarMap({ canEdit = true }) {
     map.getSource('buildings')?.setData({ type: 'FeatureCollection', features: renderFeatures })
   }, [renderFeatures])
 
+  // highlight the selected building (yellow outline, incl. edit mode)
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !loadedRef.current) return
+    map.setFilter('bldg-selected', ['==', ['get', 'building_id'], selectedId || ''])
+  }, [selectedId])
+
+  // footprint reshape mode: project the selected building's corners as
+  // draggable handles + a live preview polygon
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !loadedRef.current) return
+    if (!footprintEdit || !selectedFeature || selectedFeature.geometry?.type !== 'Polygon') {
+      fpEditRef.current = null
+      map.getSource('handles')?.setData(EMPTY_FC)
+      map.getSource('fpdraft')?.setData(EMPTY_FC)
+      return
+    }
+    const ring = selectedFeature.geometry.coordinates[0].slice(0, -1) // drop closing vertex
+    fpEditRef.current = { id: selectedFeature.properties.building_id, ring }
+    pushFpSources(map, { ring })
+  }, [footprintEdit, selectedFeature])
+
+  // footprint reshape ↔ freeform draw are mutually exclusive; crosshair cursor
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (footprintEdit) {
+      setDrawMode(false)
+      setRedrawMode(false)
+      map.getCanvas().style.cursor = 'crosshair'
+    } else if (!drawMode) {
+      map.getCanvas().style.cursor = ''
+    }
+  }, [footprintEdit]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // draw-mode bookkeeping (cursor, dblclick-zoom, cancel pending shape)
   useEffect(() => {
     drawModeRef.current = drawMode
     const map = mapRef.current
     if (!map) return
     if (drawMode) {
+      setFootprintEdit(false)
+      setRedrawMode(false)
       map.doubleClickZoom.disable()
       map.getCanvas().style.cursor = 'crosshair'
     } else {
@@ -333,6 +509,38 @@ export default function LidarMap({ canEdit = true }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [drawMode])
 
+  // redraw mode: replace the selected footprint with a freshly drawn polygon —
+  // mutually exclusive with the other two drawing modes
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (redrawMode) {
+      redrawTargetRef.current = selectedId
+      setDrawMode(false)
+      setFootprintEdit(false)
+      map.doubleClickZoom.disable()
+      map.getCanvas().style.cursor = 'crosshair'
+    } else {
+      redrawTargetRef.current = null
+      drawPtsRef.current = []
+      map.getSource('draft')?.setData(EMPTY_FC)
+      if (!drawMode && !footprintEdit) {
+        map.doubleClickZoom.enable()
+        map.getCanvas().style.cursor = ''
+      }
+    }
+  }, [redrawMode]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!redrawMode) return
+    const onKey = (e) => {
+      if (e.key === 'Escape') setRedrawMode(false)
+      if (e.key === 'Enter') finishFreeformRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [redrawMode])
+
   // ── Map init (the map is only mounted once we have data) ───────────────────
   useEffect(() => {
     if (!hasData || !containerRef.current || mapRef.current) return
@@ -351,6 +559,8 @@ export default function LidarMap({ canEdit = true }) {
           ),
           buildings: { type: 'geojson', data: EMPTY_FC },
           draft: { type: 'geojson', data: EMPTY_FC },
+          fpdraft: { type: 'geojson', data: EMPTY_FC }, // footprint reshape preview
+          handles: { type: 'geojson', data: EMPTY_FC }, // draggable corner handles
         },
         layers: [
           ...Object.keys(TILES).map((key, i) => ({
@@ -370,10 +580,27 @@ export default function LidarMap({ canEdit = true }) {
             } },
           { id: 'bldg-line', type: 'line', source: 'buildings',
             paint: { 'line-color': '#ffffff', 'line-width': 1, 'line-opacity': 0.5 } },
+          { id: 'bldg-basement', type: 'line', source: 'buildings',
+            // dashed grey outline marking buildings that have basements
+            // (basement slices with floor<0, or pass-through single-storeys)
+            filter: ['any',
+              ['<', ['coalesce', ['get', 'floor'], 0], 0],
+              ['all', ['>=', ['coalesce', ['get', 'basements'], 0], 1], ['!', ['has', 'floor']]],
+            ],
+            paint: { 'line-color': '#9ba1ad', 'line-width': 1.5, 'line-dasharray': [2, 2] } },
+          { id: 'bldg-selected', type: 'line', source: 'buildings',
+            filter: ['==', ['get', 'building_id'], ''],
+            paint: { 'line-color': '#ffd60a', 'line-width': 3, 'line-opacity': 0.9 } },
           { id: 'draft-fill', type: 'fill', source: 'draft',
             paint: { 'fill-color': '#2fbf8f', 'fill-opacity': 0.2 } },
           { id: 'draft-line', type: 'line', source: 'draft',
             paint: { 'line-color': '#2fbf8f', 'line-width': 2 } },
+          { id: 'fp-draft', type: 'fill', source: 'fpdraft',
+            paint: { 'fill-color': '#ff5533', 'fill-opacity': 0.25 } },
+          { id: 'fp-draft-line', type: 'line', source: 'fpdraft',
+            paint: { 'line-color': '#ff5533', 'line-width': 2 } },
+          { id: 'fp-handles', type: 'circle', source: 'handles',
+            paint: { 'circle-radius': 6, 'circle-color': '#ff5533', 'circle-stroke-width': 2, 'circle-stroke-color': '#ffffff' } },
         ],
       },
       center: [175.47, -37.89],
@@ -382,10 +609,15 @@ export default function LidarMap({ canEdit = true }) {
       bearing: -18,
       attributionControl: false,
     })
-    map.addControl(new NavigationControl({ visualizePitch: true }), 'top-right')
+    map.addControl(new NavigationControl({ visualizePitch: true }), 'top-left')
 
     map.on('load', () => {
       loadedRef.current = true
+      // apply the selected tile style (the map may be recreated mid-session)
+      for (const key of Object.keys(TILES)) {
+        map.setLayoutProperty(`base-raster-${key}`, 'visibility', key === tileStyleRef.current ? 'visible' : 'none')
+      }
+      map.setPaintProperty('bldg-line', 'line-color', tileStyleRef.current === 'light' ? '#3a3a3a' : '#ffffff')
       map.getSource('buildings').setData({ type: 'FeatureCollection', features: renderRef.current })
       map.fitBounds(bboxOf({ type: 'FeatureCollection', features: featuresRef.current }), { padding: 60, duration: 1200 })
     })
@@ -400,6 +632,38 @@ export default function LidarMap({ canEdit = true }) {
     map.on('mouseleave', 'bldg-extrude', () => {
       if (!drawModeRef.current) map.getCanvas().style.cursor = ''
     })
+
+    // ── footprint vertex editing: drag the corner handles of the selected building ──
+    map.on('mousedown', 'fp-handles', (e) => {
+      if (!fpEditRef.current) return
+      e.preventDefault()
+      dragIdxRef.current = e.features[0].properties.idx
+      map.getCanvas().style.cursor = 'grabbing'
+      map.dragPan.disable()
+    })
+    map.on('touchstart', 'fp-handles', (e) => {
+      if (!fpEditRef.current || e.points?.length !== 1) return
+      e.preventDefault()
+      dragIdxRef.current = e.features[0].properties.idx
+      map.dragPan.disable()
+    })
+    const onFpDragMove = (e) => {
+      const fp = fpEditRef.current
+      if (!fp || dragIdxRef.current == null) return
+      fp.ring = fp.ring.map((c, j) => (j === dragIdxRef.current ? [e.lngLat.lng, e.lngLat.lat] : c))
+      pushFpSources(map, fp)
+    }
+    map.on('mousemove', onFpDragMove)
+    map.on('touchmove', onFpDragMove)
+    const onFpDragEnd = () => {
+      if (dragIdxRef.current == null) return
+      dragIdxRef.current = null
+      map.dragPan.enable()
+      map.getCanvas().style.cursor = fpEditRef.current ? 'crosshair' : ''
+      commitFootprintRef.current()
+    }
+    map.on('mouseup', onFpDragEnd)
+    map.on('touchend', onFpDragEnd)
 
     // freeform footprint drawing: click vertices, close via first point /
     // double-click / Enter; rubber-band line + fill preview while drawing
@@ -456,9 +720,12 @@ export default function LidarMap({ canEdit = true }) {
   useEffect(() => {
     const map = mapRef.current
     if (!map || !loadedRef.current) return
+    tileStyleRef.current = tileStyle
     for (const key of Object.keys(TILES)) {
       map.setLayoutProperty(`base-raster-${key}`, 'visibility', key === tileStyle ? 'visible' : 'none')
     }
+    // white outlines vanish on the light basemap — switch to dark grey there
+    map.setPaintProperty('bldg-line', 'line-color', tileStyle === 'light' ? '#3a3a3a' : '#ffffff')
   }, [tileStyle])
 
   return (
@@ -472,6 +739,7 @@ export default function LidarMap({ canEdit = true }) {
                 <select value={tileStyle} onChange={(e) => setTileStyle(e.target.value)}>
                   <option value="satellite">satellite</option>
                   <option value="dark">dark</option>
+                  <option value="light">light</option>
                 </select>
               </label>
               {canEdit && (
@@ -486,21 +754,27 @@ export default function LidarMap({ canEdit = true }) {
             </div>
             <div ref={containerRef} className="maplibre-map" />
             <div className="legend">
-              <span><i style={{ background: '#4da3ff' }} /> LiDAR-measured height</span>
+              <span><i style={{ background: '#4da3ff' }} /> measured height (LiDAR / tag)</span>
               <span><i style={{ background: '#ffb84d' }} /> assumed 1 storey (no points)</span>
               <span><i style={{ background: '#2fbf8f' }} /> edited / manual</span>
+              <span><i style={{ background: '#595969' }} /> basement (below ground)</span>
               <span>
                 <i style={{ background: 'linear-gradient(90deg, #193c7a, #3f6ac2, #9fc4ef)' }} /> storeys (ground → roof)
               </span>
-              {!canEdit && <span className="muted tiny">view-only — surveyors can edit</span>}
-              {selected && <span className="mono tiny">{selected.building_id} · {selected.height_m} m · {selected.stories} storeys</span>}
+              {!canEdit && <span className="muted tiny">view-only — surveyors and registrars can edit</span>}
+              {selected && (
+                <span className="mono tiny">
+                  {selected.building_id} · {selected.height_m} m · {selected.stories} storeys
+                  {(selected.basements || 0) > 0 ? ` · B×${selected.basements}` : ''}
+                </span>
+              )}
             </div>
           </>
         ) : (
           <div className="lidar-empty muted">
             <h3>LiDAR → 3D buildings</h3>
-            <p>upload a <span className="mono">.laz</span> point cloud (with its CRS) and enter a bounding box (xmin, ymin, xmax, ymax) — building footprints inside it are fetched from OSM — or switch the source to your own footprint GeoJSON.</p>
-            <p>every footprint is extruded by the height of the LiDAR points above it; footprints with no LiDAR coverage are drawn as 1-storey buildings.</p>
+            <p>have a <span className="mono">.laz</span> point cloud? upload it, enter a bounding box (or use your own footprint GeoJSON), and every footprint is extruded by the height of the LiDAR points above it.</p>
+            <p>no LiDAR data? pick “no — GIS parcels only” and buildings are built from GIS parcel / OSM footprints, with heights from <span className="mono">height</span> or storey tags where available (otherwise 1 storey).</p>
           </div>
         )}
       </section>
@@ -510,19 +784,50 @@ export default function LidarMap({ canEdit = true }) {
           <h3>data source</h3>
           <div className="upload-row">
             <label className="upload-field">
-              <span>LiDAR point cloud (.laz)</span>
-              <input type="file" accept=".laz,.las" onChange={(e) => setLazFile(e.target.files[0] || null)} />
+              <span>Is LiDAR point-cloud data (.laz) available for this area?</span>
+              <span className="btn-row" role="group">
+                <button
+                  type="button"
+                  className={`btn ${hasLidar ? 'primary' : ''}`}
+                  onClick={() => setHasLidar(true)}
+                >
+                  yes — use .laz
+                </button>
+                <button
+                  type="button"
+                  className={`btn ${!hasLidar ? 'primary' : ''}`}
+                  title="no point cloud: buildings come from GIS parcels / OSM footprints, heights from height or storey tags (else 1 storey)"
+                  onClick={() => setHasLidar(false)}
+                >
+                  no — GIS parcels only
+                </button>
+              </span>
             </label>
-            <div className="upload-options">
-              <label>
-                <span>EPSG override <span className="muted tiny">(only if .laz has no CRS)</span></span>
-                <input type="text" placeholder="e.g. 2193" value={epsg} onChange={(e) => setEpsg(e.target.value)} />
-              </label>
-              <label>
-                <span>storey height (m)</span>
-                <input type="number" step="0.1" min="1" value={floorHeight} onChange={(e) => setFloorHeight(e.target.value)} />
-              </label>
-            </div>
+            {hasLidar ? (
+              <>
+                <label className="upload-field">
+                  <span>LiDAR point cloud (.laz)</span>
+                  <input type="file" accept=".laz,.las" onChange={(e) => setLazFile(e.target.files[0] || null)} />
+                </label>
+                <div className="upload-options">
+                  <label>
+                    <span>EPSG override <span className="muted tiny">(only if .laz has no CRS)</span></span>
+                    <input type="text" placeholder="e.g. 2193" value={epsg} onChange={(e) => setEpsg(e.target.value)} />
+                  </label>
+                  <label>
+                    <span>storey height (m)</span>
+                    <input type="number" step="0.1" min="1" value={floorHeight} onChange={(e) => setFloorHeight(e.target.value)} />
+                  </label>
+                </div>
+              </>
+            ) : (
+              <div className="upload-options">
+                <label>
+                  <span>storey height (m) <span className="muted tiny">(for storey-tagged parcels)</span></span>
+                  <input type="number" step="0.1" min="1" value={floorHeight} onChange={(e) => setFloorHeight(e.target.value)} />
+                </label>
+              </div>
+            )}
             <div className="upload-options">
               <label>
                 <span>footprint source</span>
@@ -536,49 +841,73 @@ export default function LidarMap({ canEdit = true }) {
               <div className="upload-options">
                 <label>
                   <span>bbox coordinates</span>
-                  <select value={bboxCrs} onChange={(e) => setBboxCrs(e.target.value)}>
-                    <option value="laz">same as .laz CRS (auto)</option>
+                  <select
+                    value={hasLidar ? bboxCrs : 'wgs84'}
+                    onChange={(e) => setBboxCrs(e.target.value)}
+                  >
+                    {hasLidar && <option value="laz">same as .laz CRS (auto)</option>}
                     <option value="wgs84">WGS84 lon/lat</option>
                   </select>
                 </label>
                 <label>
                   <span>&nbsp;</span>
                   <span className="muted tiny" style={{ padding: '7px 0' }}>
-                    {bboxCrs === 'laz'
+                    {lazBboxUnits
                       ? 'projected coords (e.g. metres) — transformed to WGS84 for OSM'
                       : 'degrees: lon −180…180, lat −90…90'}
                   </span>
                 </label>
                 <label>
-                  <span>xmin {bboxCrs === 'laz' ? '(easting)' : '(lon)'}</span>
-                  <input type="number" step="any" placeholder={bboxCrs === 'laz' ? 'e.g. 1789608.96' : 'e.g. 175.4674'} value={bbox.xmin}
+                  <span>xmin {lazBboxUnits ? '(easting)' : '(lon)'}</span>
+                  <input type="number" step="any" placeholder={lazBboxUnits ? 'e.g. 1789608.96' : 'e.g. 175.4674'} value={bbox.xmin}
                     onChange={(e) => setBbox({ ...bbox, xmin: e.target.value })} />
                 </label>
                 <label>
-                  <span>ymin {bboxCrs === 'laz' ? '(northing)' : '(lat)'}</span>
-                  <input type="number" step="any" placeholder={bboxCrs === 'laz' ? 'e.g. 5857822.67' : 'e.g. -37.8975'} value={bbox.ymin}
+                  <span>ymin {lazBboxUnits ? '(northing)' : '(lat)'}</span>
+                  <input type="number" step="any" placeholder={lazBboxUnits ? 'e.g. 5857822.67' : 'e.g. -37.8975'} value={bbox.ymin}
                     onChange={(e) => setBbox({ ...bbox, ymin: e.target.value })} />
                 </label>
                 <label>
-                  <span>xmax {bboxCrs === 'laz' ? '(easting)' : '(lon)'}</span>
-                  <input type="number" step="any" placeholder={bboxCrs === 'laz' ? 'e.g. 1791080.39' : 'e.g. 175.4747'} value={bbox.xmax}
+                  <span>xmax {lazBboxUnits ? '(easting)' : '(lon)'}</span>
+                  <input type="number" step="any" placeholder={lazBboxUnits ? 'e.g. 1791080.39' : 'e.g. 175.4747'} value={bbox.xmax}
                     onChange={(e) => setBbox({ ...bbox, xmax: e.target.value })} />
                 </label>
                 <label>
-                  <span>ymax {bboxCrs === 'laz' ? '(northing)' : '(lat)'}</span>
-                  <input type="number" step="any" placeholder={bboxCrs === 'laz' ? 'e.g. 5859009.34' : 'e.g. -37.8933'} value={bbox.ymax}
+                  <span>ymax {lazBboxUnits ? '(northing)' : '(lat)'}</span>
+                  <input type="number" step="any" placeholder={lazBboxUnits ? 'e.g. 5859009.34' : 'e.g. -37.8933'} value={bbox.ymax}
                     onChange={(e) => setBbox({ ...bbox, ymax: e.target.value })} />
                 </label>
               </div>
             ) : (
-              <label className="upload-field">
-                <span>building footprints (GeoJSON)</span>
-                <input type="file" accept=".geojson,.json" onChange={(e) => setFootprintsFile(e.target.files[0] || null)} />
-              </label>
+              <>
+                <label className="upload-field">
+                  <span>building footprints (GeoJSON)</span>
+                  <input type="file" accept=".geojson,.json" onChange={(e) => setFootprintsFile(e.target.files[0] || null)} />
+                </label>
+                {hasLidar && (
+                  <div className="upload-options">
+                    <label>
+                      <span>footprint coordinates</span>
+                      <select value={fpCrs} onChange={(e) => setFpCrs(e.target.value)}>
+                        <option value="laz">same as .laz CRS (auto)</option>
+                        <option value="wgs84">WGS84 lon/lat</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>&nbsp;</span>
+                      <span className="muted tiny" style={{ padding: '7px 0' }}>
+                        {fpCrs === 'laz'
+                          ? 'projected coords (e.g. metres) — transformed to WGS84 to match the cloud'
+                          : 'degrees: lon −180…180, lat −90…90'}
+                      </span>
+                    </label>
+                  </div>
+                )}
+              </>
             )}
             <button
               className="btn primary"
-              disabled={!lazFile || busy || (sourceMode === 'osm' ? !bboxValid : !footprintsFile)}
+              disabled={(hasLidar && !lazFile) || busy || (sourceMode === 'osm' ? !bboxValid : !footprintsFile)}
               onClick={onExtract}
             >
               {busy ? 'extracting…' : 'extract buildings'}
@@ -610,7 +939,9 @@ export default function LidarMap({ canEdit = true }) {
               <tbody>
                 <tr><td>OSM footprints</td><td>{stats.osm_buildings_fetched ?? '—'}</td></tr>
                 <tr><td>buildings</td><td>{features.length}</td></tr>
-                <tr><td>from LiDAR</td><td>{stats.from_lidar}</td></tr>
+                {stats.from_lidar != null && <tr><td>from LiDAR</td><td>{stats.from_lidar}</td></tr>}
+                {stats.from_height_tag != null && <tr><td>height tag</td><td>{stats.from_height_tag}</td></tr>}
+                {stats.from_levels != null && <tr><td>levels tag</td><td>{stats.from_levels}</td></tr>}
                 <tr><td>assumed 1 storey</td><td>{stats.assumed_1_story}</td></tr>
                 <tr><td>edited / manual</td><td>{editedCount}</td></tr>
                 <tr><td>tallest</td><td>{stats.max_height_m} m</td></tr>
@@ -635,7 +966,12 @@ export default function LidarMap({ canEdit = true }) {
 
         {selected && (
           <div className="panel-section">
-            <h3>building details</h3>
+            <h3>
+              building details
+              {(selected.basements || 0) > 0 && (
+                <span className="b-badge" title="has below-ground levels">B×{selected.basements}</span>
+              )}
+            </h3>
             {editing ? (
               <div className="edit-form">
                 <label>
@@ -648,7 +984,20 @@ export default function LidarMap({ canEdit = true }) {
                     value={draft.floors}
                     onChange={(e) => {
                       const fl = Math.max(1, parseInt(e.target.value) || 1)
-                      setDraft({ floors: fl, height: +(fl * floorH).toFixed(2) })
+                      setDraft({ ...draft, floors: fl, height: +(fl * floorH).toFixed(2) })
+                    }}
+                  />
+                </label>
+                <label>
+                  <span>basements</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={draft.basements ?? 0}
+                    onChange={(e) => {
+                      const b = Math.max(0, parseInt(e.target.value) || 0)
+                      setDraft({ ...draft, basements: b })
                     }}
                   />
                 </label>
@@ -661,7 +1010,7 @@ export default function LidarMap({ canEdit = true }) {
                     value={draft.height}
                     onChange={(e) => {
                       const h = parseFloat(e.target.value) || 0
-                      setDraft({ height: e.target.value, floors: Math.max(1, Math.round(h / floorH)) })
+                      setDraft({ ...draft, height: e.target.value, floors: Math.max(1, Math.round(h / floorH)) })
                     }}
                   />
                 </label>
@@ -678,17 +1027,58 @@ export default function LidarMap({ canEdit = true }) {
                     {selected.name && <tr><td>name</td><td>{selected.name}</td></tr>}
                     <tr><td>height</td><td>{selected.height_m} m</td></tr>
                     <tr><td>storeys</td><td>{selected.stories}</td></tr>
+                    <tr><td>basements</td><td>{selected.basements || 0}</td></tr>
                     <tr><td>ground Z</td><td>{selected.ground_z ?? '—'}</td></tr>
                     <tr><td>roof Z</td><td>{selected.roof_z ?? '—'}</td></tr>
                     <tr><td>LiDAR points</td><td>{selected.lidar_points}</td></tr>
                     <tr><td>source</td><td>{selected.height_source}</td></tr>
+                    <tr>
+                      <td>confirmation</td>
+                      <td className={selected.edit_status === 'pending' ? 'status-pending' : selected.edit_status === 'confirmed' ? 'status-confirmed' : ''}>
+                        {selected.edit_status === 'pending' ? '⏳ pending' : selected.edit_status === 'confirmed' ? '✓ confirmed' : '—'}
+                      </td>
+                    </tr>
                   </tbody>
                 </table>
                 {canEdit && (
                   <div className="btn-row">
-                    <button className="btn primary" onClick={() => { setDraft({ height: selected.height_m, floors: selected.stories }); setEditing(true) }}>
+                    <button className="btn primary" onClick={() => { setDraft({ height: selected.height_m, floors: selected.stories, basements: selected.basements || 0 }); setEditing(true) }}>
                       edit
                     </button>
+                    {selected.geometry?.type === 'Polygon' && (
+                      <button
+                        className={`btn ${footprintEdit ? 'primary' : ''}`}
+                        title={footprintEdit ? 'drag the corner handles, then click done' : 'drag the corner handles to reshape the footprint'}
+                        onClick={() => setFootprintEdit((v) => !v)}
+                      >
+                        {footprintEdit ? 'done reshaping' : 'edit footprint'}
+                      </button>
+                    )}
+                    {selected.geometry?.type === 'Polygon' && (
+                      <button
+                        className={`btn ${redrawMode ? 'primary' : ''}`}
+                        title={redrawMode ? 'click the corners of the new outline — Enter / double-click to finish, Esc cancels' : 'draw a brand-new outline to replace this footprint'}
+                        onClick={() => setRedrawMode((v) => !v)}
+                      >
+                        {redrawMode ? 'redrawing…' : 'redraw footprint'}
+                      </button>
+                    )}
+                    <button
+                      className="btn"
+                      title="add one below-ground level (depth = storey height)"
+                      onClick={() => changeBasements(1)}
+                    >
+                      + basement
+                    </button>
+                    {(selected.basements || 0) > 0 && (
+                      <button
+                        className="btn"
+                        title="remove the deepest basement level"
+                        onClick={() => changeBasements(-1)}
+                      >
+                        − basement
+                      </button>
+                    )}
                     {originalsRef.current.has(selectedId) && (
                       <button className="btn" onClick={resetBuilding}>reset</button>
                     )}
@@ -697,11 +1087,43 @@ export default function LidarMap({ canEdit = true }) {
                 )}
               </>
             )}
+            {(selected.edit_history?.length || 0) > 0 && (
+              <div className="history-block">
+                <h3>change history</h3>
+                <ul className="history">
+                  {[...selected.edit_history].reverse().map((h, i) => (
+                    <li key={i}>
+                      <span className="who">{h.by} ({h.role})</span> — {h.change}
+                      <span className="when">{new Date(h.at).toLocaleString()}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         )}
       </aside>
     </main>
   )
+}
+
+function pushFpSources(map, fp) {
+  map.getSource('handles')?.setData({
+    type: 'FeatureCollection',
+    features: fp.ring.map((c, i) => ({
+      type: 'Feature',
+      properties: { idx: i },
+      geometry: { type: 'Point', coordinates: c },
+    })),
+  })
+  map.getSource('fpdraft')?.setData({
+    type: 'FeatureCollection',
+    features: [{
+      type: 'Feature',
+      properties: {},
+      geometry: { type: 'Polygon', coordinates: [[...fp.ring, fp.ring[0]]] },
+    }],
+  })
 }
 
 function bboxOf(featureCollection) {
