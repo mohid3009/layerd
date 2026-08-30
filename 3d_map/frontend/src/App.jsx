@@ -47,7 +47,11 @@ export default function App() {
       <Route
         path="/lidar"
         element={
-          session ? <LidarPage session={session} onLogout={() => updateSession(null)} /> : <Navigate to="/login" replace />
+          session
+            ? session.role === 'citizen'
+              ? <Navigate to="/dashboard" replace />
+              : <LidarPage session={session} onLogout={() => updateSession(null)} />
+            : <Navigate to="/login" replace />
         }
       />
       <Route path="*" element={<Navigate to="/" replace />} />
@@ -88,9 +92,11 @@ function Topbar({ session, onLogout, children }) {
         <NavLink to="/dashboard" end className={({ isActive }) => `btn ${isActive ? 'primary' : ''}`}>
           parcels
         </NavLink>
-        <NavLink to="/lidar" className={({ isActive }) => `btn ${isActive ? 'primary' : ''}`}>
-          LiDAR scan
-        </NavLink>
+        {session.role !== 'citizen' && (
+          <NavLink to="/lidar" className={({ isActive }) => `btn ${isActive ? 'primary' : ''}`}>
+            LiDAR scan
+          </NavLink>
+        )}
       </nav>
       {children}
       <div className="session-box">
@@ -158,6 +164,9 @@ function Dashboard({ session, onLogout }) {
       .catch((e) => console.error('session delete failed:', e))
   }
 
+  const canScan = session.role !== 'citizen' // citizens view saved scans only
+  const canEdit = session.role === 'surveyor' // surveyor edits, registrar views
+
   const selected = useMemo(
     () => visibleFeatures.find((f) => f.properties.building_id === selectedId)?.properties ?? null,
     [visibleFeatures, selectedId],
@@ -193,7 +202,7 @@ function Dashboard({ session, onLogout }) {
           <span className="mono tiny">{stats.n} buildings · tallest {stats.tallest} m</span>
         )}
         <button className="btn" onClick={() => setReloadKey((k) => k + 1)}>refresh</button>
-        <NavLink to="/lidar" className="btn">new scan</NavLink>
+        {canScan && <NavLink to="/lidar" className="btn">new scan</NavLink>}
       </div>
 
       <main className="workspace">
@@ -206,7 +215,7 @@ function Dashboard({ session, onLogout }) {
             <div className="lidar-empty muted">
               <h3>No buildings yet</h3>
               <p>run a LiDAR scan to generate building footprints and heights — they will appear here, stored in PostGIS.</p>
-              <NavLink to="/lidar" className="btn primary">open LiDAR scan</NavLink>
+              {canScan && <NavLink to="/lidar" className="btn primary">open LiDAR scan</NavLink>}
             </div>
           )}
           {state === 'unavailable' && (
@@ -237,13 +246,15 @@ function Dashboard({ session, onLogout }) {
                       </span>
                     </label>
                     <span className="muted tiny mono">{s.buildings} bld</span>
-                    <button
-                      className="btn danger tiny"
-                      title="delete this session and its buildings"
-                      onClick={() => removeSession(s.session_id)}
-                    >
-                      ✕
-                    </button>
+                    {canEdit && (
+                      <button
+                        className="btn danger tiny"
+                        title="delete this session and its buildings"
+                        onClick={() => removeSession(s.session_id)}
+                      >
+                        ✕
+                      </button>
+                    )}
                   </div>
                 )
               })
@@ -301,7 +312,7 @@ function LidarPage({ session, onLogout }) {
     <div className="app">
       <Topbar session={session} onLogout={onLogout} />
       <Suspense fallback={<PageFallback />}>
-        <LidarMap />
+        <LidarMap canEdit={session.role === 'surveyor'} />
       </Suspense>
     </div>
   )

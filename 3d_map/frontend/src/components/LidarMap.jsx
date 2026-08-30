@@ -19,7 +19,7 @@ const TILES = {
 
 const EMPTY_FC = { type: 'FeatureCollection', features: [] }
 
-export default function LidarMap() {
+export default function LidarMap({ canEdit = true }) {
   const [lazFile, setLazFile] = useState(null)
   const [footprintsFile, setFootprintsFile] = useState(null)
   const [sourceMode, setSourceMode] = useState('osm') // 'osm' | 'footprints'
@@ -156,9 +156,9 @@ export default function LidarMap() {
 
   const markDirty = () => { dirtyRef.current = true }
 
-  // auto-sync manual edits to PostGIS (debounced)
+  // auto-sync manual edits to PostGIS (debounced) — surveyors only
   useEffect(() => {
-    if (!dirtyRef.current) return
+    if (!canEdit || !dirtyRef.current) return
     if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
     syncTimerRef.current = setTimeout(async () => {
       try {
@@ -467,19 +467,22 @@ export default function LidarMap() {
                   <option value="dark">dark</option>
                 </select>
               </label>
-              <button
-                className={`btn ${drawMode ? 'primary' : ''}`}
-                onClick={() => setDrawMode((v) => !v)}
-                title={drawMode ? 'click to add corners · close by clicking the first point, double-clicking, or pressing Enter · Esc cancels' : 'draw a freeform footprint by clicking its corners'}
-              >
-                {drawMode ? 'drawing… (dblclick / Enter to finish)' : '+ add building'}
-              </button>
+              {canEdit && (
+                <button
+                  className={`btn ${drawMode ? 'primary' : ''}`}
+                  onClick={() => setDrawMode((v) => !v)}
+                  title={drawMode ? 'click to add corners · close by clicking the first point, double-clicking, or pressing Enter · Esc cancels' : 'draw a freeform footprint by clicking its corners'}
+                >
+                  {drawMode ? 'drawing… (dblclick / Enter to finish)' : '+ add building'}
+                </button>
+              )}
             </div>
             <div ref={containerRef} className="maplibre-map" />
             <div className="legend">
               <span><i style={{ background: '#4da3ff' }} /> LiDAR-measured height</span>
               <span><i style={{ background: '#ffb84d' }} /> assumed 1 storey (no points)</span>
               <span><i style={{ background: '#2fbf8f' }} /> edited / manual</span>
+              {!canEdit && <span className="muted tiny">view-only — surveyors can edit</span>}
               {selected && <span className="mono tiny">{selected.building_id} · {selected.height_m} m · {selected.stories} storeys</span>}
             </div>
           </>
@@ -608,9 +611,11 @@ export default function LidarMap() {
             </table>
             {stats.postgis_warning && <div className="error">{stats.postgis_warning}</div>}
             <div className="btn-row">
-              <button className="btn" onClick={resetAll} disabled={!editedCount && features.length === originalsRef.current.size}>
-                reset all edits
-              </button>
+              {canEdit && (
+                <button className="btn" onClick={resetAll} disabled={!editedCount && features.length === originalsRef.current.size}>
+                  reset all edits
+                </button>
+              )}
               <button className="btn" onClick={exportGeoJSON} disabled={!features.length}>
                 download GeoJSON
               </button>
@@ -669,15 +674,17 @@ export default function LidarMap() {
                     <tr><td>source</td><td>{selected.height_source}</td></tr>
                   </tbody>
                 </table>
-                <div className="btn-row">
-                  <button className="btn primary" onClick={() => { setDraft({ height: selected.height_m, floors: selected.stories }); setEditing(true) }}>
-                    edit
-                  </button>
-                  {originalsRef.current.has(selectedId) && (
-                    <button className="btn" onClick={resetBuilding}>reset</button>
-                  )}
-                  <button className="btn danger" onClick={deleteBuilding}>delete</button>
-                </div>
+                {canEdit && (
+                  <div className="btn-row">
+                    <button className="btn primary" onClick={() => { setDraft({ height: selected.height_m, floors: selected.stories }); setEditing(true) }}>
+                      edit
+                    </button>
+                    {originalsRef.current.has(selectedId) && (
+                      <button className="btn" onClick={resetBuilding}>reset</button>
+                    )}
+                    <button className="btn danger" onClick={deleteBuilding}>delete</button>
+                  </div>
+                )}
               </>
             )}
           </div>
