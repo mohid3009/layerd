@@ -259,32 +259,6 @@ def lidar_clear_buildings():
     return {"status": "cleared"}
 
 
-# ---------------- Desktop / production serving ----------------
-# The Electron desktop shell spawns this backend and loads http://localhost:8000
-# directly, so the API is aliased under /api/ (the frontend's fetch base) and
-# the built frontend (3d_map/frontend/dist) is served from the same origin.
-
-_FRONTEND_DIST = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "frontend", "dist",
-)
-
-app.mount("/api", app)  # same-origin alias: /api/lidar/... -> /lidar/...
-
-if os.path.isdir(_FRONTEND_DIST):
-    _assets_dir = os.path.join(_FRONTEND_DIST, "assets")
-    if os.path.isdir(_assets_dir):
-        app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
-
-    @app.get("/{full_path:path}", include_in_schema=False)
-    async def spa_fallback(full_path: str):
-        """Serve the SPA (client-side routing needs index.html for every path)."""
-        candidate = os.path.join(_FRONTEND_DIST, full_path)
-        if full_path and os.path.isfile(candidate):
-            return FileResponse(candidate)
-        return FileResponse(os.path.join(_FRONTEND_DIST, "index.html"))
-
-
 @app.get("/lidar/sessions")
 def lidar_sessions():
     """All scan sessions with their live building counts."""
@@ -302,5 +276,36 @@ def lidar_delete_session(session_id: str):
         raise HTTPException(503, "PostGIS is not available")
     delete_session(session_id)
     return {"status": "deleted", "session_id": session_id}
+
+
+# ---------------- Desktop / production serving ----------------
+# The Electron desktop shell spawns this backend and loads http://localhost:<port>
+# directly, so the API is aliased under /api/ (the frontend's fetch base) and
+# the built frontend (3d_map/frontend/dist) is served from the same origin.
+# NOTE: this block must stay at the very END of the file — the SPA catch-all
+# matches every GET path, so it has to be registered after all API routes.
+
+_FRONTEND_DIST = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "frontend", "dist",
+)
+
+app.mount("/api", app)  # same-origin alias: /api/lidar/... -> /lidar/...
+
+if os.path.isdir(_FRONTEND_DIST):
+    _assets_dir = os.path.join(_FRONTEND_DIST, "assets")
+    if os.path.isdir(_assets_dir):
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        """Serve the SPA (client-side routing needs index.html for every path)."""
+        # never swallow API/asset paths — they must never return HTML
+        if full_path == "api" or full_path.startswith(("api/", "assets/")):
+            raise HTTPException(404, "not found")
+        candidate = os.path.join(_FRONTEND_DIST, full_path)
+        if full_path and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        return FileResponse(os.path.join(_FRONTEND_DIST, "index.html"))
 
 
