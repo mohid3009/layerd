@@ -151,6 +151,14 @@ function Dashboard({ session, onLogout }) {
     return () => { cancelled = true }
   }, [reloadKey])
 
+  // if PostgreSQL wasn't reachable (e.g. the desktop app launched before the
+  // database finished starting), keep retrying every 5 seconds
+  useEffect(() => {
+    if (state !== 'unavailable') return
+    const t = setTimeout(() => setReloadKey((k) => k + 1), 5000)
+    return () => { clearTimeout(t) }
+  }, [state, reloadKey])
+
   // proximity clusters of sessions — the bottom level of the country/region
   // tree (nearby scans of the same area stay together under their region)
   const clusters = useMemo(() => {

@@ -84,7 +84,28 @@ def init_postgis():
             cur.execute(SCHEMA)
 
 
+_init_done = False
+
+
+def ensure_init():
+    """
+    Lazily run the schema setup on the first successful connection. Covers the
+    desktop-app launch race where the backend starts before PostgreSQL is up:
+    every public entry point calls this, so persistence recovers as soon as
+    the database becomes reachable — no process restart needed.
+    """
+    global _init_done
+    if _init_done:
+        return
+    try:
+        init_postgis()
+        _init_done = True
+    except Exception:
+        pass  # Postgres not reachable yet — retried on the next call
+
+
 def is_available():
+    ensure_init()
     try:
         with _conn() as conn:
             with conn.cursor() as cur:
@@ -145,6 +166,7 @@ ON CONFLICT (building_id) DO UPDATE SET
 
 def save_session(session_id, label=None, mode=None, crs=None):
     """Register/refresh a scan session row."""
+    ensure_init()
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -162,6 +184,7 @@ def save_session(session_id, label=None, mode=None, crs=None):
 
 def delete_building(building_id):
     """Delete a single building row; returns True if a row was removed."""
+    ensure_init()
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM lidar_buildings WHERE building_id = %s", (building_id,))
@@ -173,6 +196,7 @@ def set_edit_status(building_id, status, entry):
     Set props.edit_status on one building and append an audit entry to its
     edit_history — the registrar-confirmation workflow.
     """
+    ensure_init()
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT props FROM lidar_buildings WHERE building_id = %s", (building_id,))
@@ -204,6 +228,7 @@ def save_buildings(featurecollection, session_id, label=None, mode=None, crs=Non
     """
     if not session_id:
         raise ValueError("session_id is required")
+    ensure_init()
     features = featurecollection.get("features", [])
     save_session(session_id, label=label, mode=mode, crs=crs)
     with _conn() as conn:
@@ -235,6 +260,7 @@ def save_buildings(featurecollection, session_id, label=None, mode=None, crs=Non
 
 def fetch_buildings(session_id=None):
     """Saved buildings as a GeoJSON FeatureCollection (WGS84), all sessions or one."""
+    ensure_init()
     with _conn() as conn:
         with conn.cursor() as cur:
             if session_id:
@@ -265,6 +291,7 @@ def fetch_buildings(session_id=None):
 
 def list_sessions():
     """All scan sessions with live building counts, newest first."""
+    ensure_init()
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -293,6 +320,7 @@ def list_sessions():
 
 def delete_session(session_id):
     """Remove a scan session and all of its buildings."""
+    ensure_init()
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM lidar_buildings WHERE session_id = %s", (session_id,))
@@ -300,6 +328,7 @@ def delete_session(session_id):
 
 
 def count_buildings():
+    ensure_init()
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM lidar_buildings")
@@ -307,6 +336,7 @@ def count_buildings():
 
 
 def clear_buildings():
+    ensure_init()
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM lidar_buildings")
