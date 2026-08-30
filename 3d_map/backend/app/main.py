@@ -282,9 +282,69 @@ def lidar_delete_session(session_id: str):
 
 @app.get("/lidar/units")
 def ulpin_units_for_building(building_id: str = Query(...)):
-    """All generated 3D ULPIN units of one building."""
-    from .postgis import fetch_units
-    return {"building_id": building_id, "units": fetch_units(building_id)}
+    """
+    All 3D ULPIN units of one building. If the building has no units yet, mock
+    segmentation (random fallback) is generated and persisted into the
+    ulpin_units table on the fly, using the building's own floor/basement
+    counts — so the tables always carry the segment parts.
+    """
+    import math
+
+    from shapely.geometry import Polygon as ShPolygon
+
+    from .postgis import fetch_buildings, fetch_units, save_units
+    from .segmentation import random_units
+    from .ulpin import base_ulpin, owner_for, unit_ulpin
+
+    units = fetch_units(building_id)
+    if units:
+        return {"building_id": building_id, "mock": False, "units": units}
+
+    fc = fetch_buildings()
+    feat = next(
+        (f for f in fc["features"] if f["properties"].get("building_id") == building_id),
+        None,
+    )
+    if feat is None:
+        return {"building_id": building_id, "mock": True, "units": []}
+
+    props = feat["properties"]
+    floors = max(1, int(props.get("stories") or 1))
+    basements = max(0, int(props.get("basements") or 0))
+    rects = random_units(6, seed=building_id)
+    base = base_ulpin(building_id)
+
+    geom = feat["geometry"]
+    ring = geom["coordinates"][0] if geom["type"] == "Polygon" else geom["coordinates"][0][0]
+    lons = [c[0] for c in ring]
+    lats = [c[1] for c in ring]
+    lat_mid = (min(lats) + max(lats)) / 2
+    width_m = max(1.0, (max(lons) - min(lons)) * 111320 * math.cos(math.radians(lat_mid)))
+    depth_m = max(1.0, (max(lats) - min(lats)) * 110540)
+
+    units = []
+    for floor_index in list(range(-basements, 0)) + list(range(1, floors + 1)):
+        for j, (x0, y0, x1, y1) in enumerate(rects, start=1):
+            ulp = unit_ulpin(base, floor_index, j)
+            owner = owner_for(ulp, floor_index)
+            poly = [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]
+            poly_m = [[x * width_m, y * depth_m] for x, y in poly[:-1]]
+            area = abs(ShPolygon(poly_m).area)
+            units.append({
+                "unit_ulpin": ulp,
+                "base_ulpin": base,
+                "floor_index": floor_index,
+                "unit_no": j,
+                "polygon": poly,
+                "area_sqm": round(area, 2),
+                "rights_type": owner["rights_type"],
+                "owner_id": owner["owner_id"],
+                "owner_name": owner["owner_name"],
+                "segmentation": "mock",
+                "validation_status": "valid",
+            })
+    save_units(building_id, units)
+    return {"building_id": building_id, "mock": True, "units": units}
 
 
 @app.delete("/lidar/units")

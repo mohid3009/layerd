@@ -118,7 +118,31 @@ export default function UlpinView({ session }) {
   }, [selected])
 
   const selUnit = units.find((u) => u.unit_ulpin === selUlpin) || null
-  const maxFloor = units.reduce((m, u) => Math.max(m, u.floor_index), 0)
+
+  // before units are generated, show the building's sections as mock slabs —
+  // the chosen building is always fully visible in 3D
+  const mockSlabs = useMemo(() => {
+    if (!selected || units.length) return []
+    const stories = selected.properties.stories || 1
+    const basements = selected.properties.basements || 0
+    const out = []
+    for (let f = -basements; f <= stories; f++) {
+      if (f === 0) continue
+      out.push({
+        unit_ulpin: `section-F${f}`,
+        floor_index: f,
+        unit_no: 0,
+        polygon: [[0.02, 0.02], [0.98, 0.02], [0.98, 0.98], [0.02, 0.98], [0.02, 0.02]],
+        area_sqm: null,
+        mock: true,
+      })
+    }
+    return out
+  }, [selected, units.length])
+
+  const displayUnits = units.length ? units : mockSlabs
+  const selSlab = mockSlabs.find((s) => s.unit_ulpin === selUlpin) || null
+  const maxFloor = displayUnits.reduce((m, u) => Math.max(m, u.floor_index), 1)
   const baseUlpin = units[0]?.base_ulpin || null
 
   // units grouped by floor for the sidebar list
@@ -141,7 +165,7 @@ export default function UlpinView({ session }) {
   return (
     <main className="workspace">
         <section className="viewport">
-          {dims && units.length > 0 && (
+          {dims && selId && (
             <Canvas
               key={selId}
               camera={{
@@ -154,7 +178,7 @@ export default function UlpinView({ session }) {
               <ambientLight intensity={0.85} />
               <directionalLight position={[dims.w, dims.w * 2, dims.d]} intensity={0.9} />
               <gridHelper args={[Math.max(dims.w, dims.d) * 4, 24, '#2c2c2c', '#1c1c1c']} />
-              {units.map((u) => (
+              {displayUnits.map((u) => (
                 <UnitMesh
                   key={u.unit_ulpin}
                   unit={u}
@@ -172,13 +196,7 @@ export default function UlpinView({ session }) {
           {!selId && (
             <div className="lidar-empty muted">
               <h3>3D ULPIN explorer</h3>
-              <p>choose a building from the sidebar to view its vertical units, ULPINs and owners.</p>
-            </div>
-          )}
-          {selId && !units.length && (
-            <div className="lidar-empty muted">
-              <h3>No units yet</h3>
-              <p>generate the 3D ULPIN unit tree — upload a floor plan for AI segmentation, or use the random fallback.</p>
+              <p>choose a building from the sidebar — only that building is shown, with all of its sections, ULPINs and owners.</p>
             </div>
           )}
         </section>
@@ -292,6 +310,19 @@ export default function UlpinView({ session }) {
                   <tr><td>owner id</td><td className="mono">{selUnit.owner_id}</td></tr>
                   <tr><td>status</td><td className={selUnit.validation_status === 'conflict' ? 'status-pending' : 'status-confirmed'}>{selUnit.validation_status}</td></tr>
                   <tr><td>segmentation</td><td>{selUnit.segmentation}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {selSlab && (
+            <div className="panel-section">
+              <h3>section details</h3>
+              <table className="kv">
+                <tbody>
+                  <tr><td>section</td><td>{selSlab.floor_index < 0 ? `basement ${-selSlab.floor_index}` : `floor ${selSlab.floor_index}`}</td></tr>
+                  <tr><td>z-range</td><td>{selSlab.floor_index * FH} m → {(selSlab.floor_index + 1) * FH} m</td></tr>
+                  <tr><td>ULPINs</td><td>generate units to populate this section</td></tr>
                 </tbody>
               </table>
             </div>

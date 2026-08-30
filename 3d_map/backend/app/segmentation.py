@@ -10,6 +10,7 @@ recursive splitting into plausible unit cells. Used when no image is uploaded,
 or when ultralytics/torch is unavailable or inference fails. Every unit rect is
 in normalized 0..1 floor-plan coordinates (x0, y0, x1, y1).
 """
+import hashlib
 import os
 
 import numpy as np
@@ -74,6 +75,8 @@ def _yolo_units(image_bytes, max_units=10):
 
 def random_units(n_units, seed):
     """Random fallback floor plan: recursive splitting into n_units cells."""
+    if isinstance(seed, str):
+        seed = int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12], 16)
     rng = np.random.default_rng(int(seed) % (2**32))
     cells = [(0.05, 0.05, 0.95, 0.95)]
     while len(cells) < max(2, n_units):
