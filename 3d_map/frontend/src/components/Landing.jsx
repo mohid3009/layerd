@@ -145,50 +145,59 @@ function Nav({ openLogin }) {
 const heroPop = (delay, from = 0.82) => ({
   initial: { opacity: 0, scale: from, y: 46 },
   animate: { opacity: 1, scale: 1, y: 0 },
-  transition: { type: 'spring', stiffness: 250, damping: 18, delay },
+  transition: { type: 'spring', stiffness: 300, damping: 20, delay },
 })
 
 function Hero({ openLogin }) {
+  // the globe (three.js chunk + WebGL init) mounts after the text has popped,
+  // so the heavy load never delays the visible content
+  const [globeOn, setGlobeOn] = useState(false)
+  useEffect(() => {
+    const t = setTimeout(() => setGlobeOn(true), 350)
+    return () => clearTimeout(t)
+  }, [])
   return (
     <header className="relative min-h-screen flex items-center justify-center overflow-hidden">
       <div className="hero-halo" />
-      <motion.div className="hero-globe" aria-hidden="true" {...heroPop(0.05, 0.7)}>
-        <Suspense fallback={<div className="hero-globe-loading" />}>
-          <HeroGlobe />
-        </Suspense>
+      <motion.div className="hero-globe" aria-hidden="true" {...heroPop(0.02, 0.7)}>
+        {globeOn && (
+          <Suspense fallback={<div className="hero-globe-loading" />}>
+            <HeroGlobe />
+          </Suspense>
+        )}
       </motion.div>
       <motion.div
         className="relative z-10 flex flex-col items-center text-center px-6 pt-16"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
-        transition={{ duration: 0.01, delay: 0.12 }}
+        transition={{ duration: 0.01, delay: 0.06 }}
       >
         <motion.p
           className="text-[11px] tracking-[0.24em] uppercase text-[#86868B]"
-          {...heroPop(0.16, 0.9)}
+          {...heroPop(0.08, 0.9)}
         >
           SIH26095 · Smart India Hackathon 2026
         </motion.p>
         <motion.h1
           className="mt-6 text-[clamp(52px,8.5vw,110px)] leading-[1.01] font-bold tracking-[-0.04em] text-white"
-          {...heroPop(0.24, 0.72)}
+          {...heroPop(0.14, 0.72)}
         >
           One Parcel.<br />Every Dimension.
         </motion.h1>
         <motion.p
           className="mt-7 max-w-[640px] text-[#A1A1A6] text-[17px] md:text-[19px] leading-[1.65]"
-          {...heroPop(0.36, 0.9)}
+          {...heroPop(0.2, 0.9)}
         >
           Layerd is a 3D cadastral system that generates unique spatial IDs for surface land
           parcels, multi-storey apartment units, and the infrastructure beneath them.
         </motion.p>
-        <motion.div className="mt-11 flex gap-4 flex-wrap justify-center" {...heroPop(0.48, 0.85)}>
+        <motion.div className="mt-11 flex gap-4 flex-wrap justify-center" {...heroPop(0.26, 0.85)}>
           <PillPrimary onClick={() => openLogin('citizen')}>Launch the demo</PillPrimary>
           <PillGhost href="#problem">Explore the system</PillGhost>
         </motion.div>
         <motion.p
           className="mt-9 text-[11px] tracking-[0.08em] text-[#86868B] font-mono"
-          {...heroPop(0.56, 0.95)}
+          {...heroPop(0.3, 0.95)}
         >
           TN-02-6001-2345-6789 · G+4 · B1 · 15 units
         </motion.p>
