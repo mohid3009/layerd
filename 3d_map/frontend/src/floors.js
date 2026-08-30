@@ -18,10 +18,10 @@ export function hslToHex(h, s, l) {
   return `#${to(f(0))}${to(f(8))}${to(f(4))}`
 }
 
-// floor 0 (ground) → hue 225 (blue), top floor → hue 45 (amber)
+// floor 0 (ground, darkest) → top floor (lightest), all in shades of blue
 export function floorColor(i, n) {
   const t = n <= 1 ? 0 : i / (n - 1)
-  return hslToHex(225 - t * 180, 72, 48 + t * 12)
+  return hslToHex(216, 68, 30 + t * 45)
 }
 
 // Expand building features into render slices. Height is divided evenly

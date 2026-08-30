@@ -490,7 +490,7 @@ export default function LidarMap({ canEdit = true }) {
               <span><i style={{ background: '#ffb84d' }} /> assumed 1 storey (no points)</span>
               <span><i style={{ background: '#2fbf8f' }} /> edited / manual</span>
               <span>
-                <i style={{ background: 'linear-gradient(90deg, #3f5fd0, #46c8c0, #d8cf4e)' }} /> storeys (ground → roof)
+                <i style={{ background: 'linear-gradient(90deg, #193c7a, #3f6ac2, #9fc4ef)' }} /> storeys (ground → roof)
               </span>
               {!canEdit && <span className="muted tiny">view-only — surveyors can edit</span>}
               {selected && <span className="mono tiny">{selected.building_id} · {selected.height_m} m · {selected.stories} storeys</span>}
