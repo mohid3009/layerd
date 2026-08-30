@@ -116,6 +116,30 @@ you back up a level. Surveyors/registrars can still delete sessions (✕) at
 the scan level. While locations resolve, the group shows "⏳ locating…";
 unresolvable points land under "Unknown area".
 
+### 3D ULPIN units (per-building unit tree)
+
+The **ulpin units** tab (top bar) is the 3D ULPIN explorer: pick a building →
+generate its vertical unit tree → browse every unit in 3D with its ULPIN,
+owner, area and rights type.
+
+- **Base ULPIN**: a deterministic mock 14-digit ID (`XX-DD-DDDD-DDDD-DDDD`,
+  e.g. `EE-26-2308-1979-6175`) hashed from the building id — stable across
+  regenerations.
+- **Unit ULPINs**: `{base}-F{floor}-U{unit}` — floors 1..N, basements negative
+  (`F-1`, `F-2`), per the PRD.
+- **Segmentation**: upload a floor plan image and **YOLOv11-seg** (`ultralytics`,
+  weights `yolo11n-seg.pt` auto-downloaded on first use) segments it into unit
+  rects; **without an image, or if the model is unavailable, a randomly
+  generated plan is used as the fallback** (recursive plate subdivision).
+  The result reports which source produced the layout.
+- **Ownership**: each unit gets a deterministic demo owner (12-owner registry)
+  and a rights type (owned / leased / common / air-rights; basements are
+  leased/common). Topology check: units on a floor are tested for overlap and
+  flagged `conflict` (PRD FR13).
+- Everything persists in PostGIS (`ulpin_units` table) via
+  `POST /lidar/units/generate`, `GET /lidar/units?building_id=`,
+  `DELETE /lidar/units?building_id=`.
+
 ### Registrar notifications tab
 
 The registrar's dashboard sidebar has two tabs: **scan sessions** and

@@ -278,6 +278,119 @@ def lidar_delete_session(session_id: str):
     return {"status": "deleted", "session_id": session_id}
 
 
+# ---------------- 3D ULPIN units ----------------
+
+@app.get("/lidar/units")
+def ulpin_units_for_building(building_id: str = Query(...)):
+    """All generated 3D ULPIN units of one building."""
+    from .postgis import fetch_units
+    return {"building_id": building_id, "units": fetch_units(building_id)}
+
+
+@app.delete("/lidar/units")
+def ulpin_units_clear(building_id: str = Query(...)):
+    """Remove the whole unit tree of one building."""
+    from .postgis import delete_units
+    removed = delete_units(building_id)
+    return {"status": "cleared", "building_id": building_id, "removed": removed}
+
+
+@app.post("/lidar/units/generate")
+async def ulpin_units_generate(
+    building_id: str = Form(...),
+    floors: int = Form(...),
+    basements: int = Form(0),
+    floor_height: float = Form(3.0),
+    plan: UploadFile | None = File(None),
+):
+    """
+    Generate the 3D ULPIN unit tree for one building. With an uploaded floor
+    plan image the YOLOv11-seg model proposes the unit layout; without one (or
+    when the model is unavailable) a randomly generated plan is used instead.
+    Unit ULPINs follow `{base}-F{floor}-U{unit}` (basements: negative floors).
+    """
+    import math
+    from itertools import combinations
+
+    from shapely.geometry import Polygon as ShPolygon
+
+    from .postgis import fetch_buildings, save_units
+    from .segmentation import segment_floorplan
+    from .ulpin import base_ulpin, owner_for, unit_ulpin
+
+    if floors < 1 or floors > 60:
+        raise HTTPException(400, "floors must be between 1 and 60")
+    if basements < 0 or basements > 6:
+        raise HTTPException(400, "basements must be between 0 and 6")
+    if floor_height <= 0 or floor_height > 12:
+        raise HTTPException(400, "floor_height must be between 0 and 12")
+
+    fc = fetch_buildings()
+    feat = next(
+        (f for f in fc["features"] if f["properties"].get("building_id") == building_id),
+        None,
+    )
+    if feat is None:
+        raise HTTPException(404, f"building {building_id} not found")
+
+    geom = feat["geometry"]
+    ring = geom["coordinates"][0] if geom["type"] == "Polygon" else geom["coordinates"][0][0]
+    lons = [c[0] for c in ring]
+    lats = [c[1] for c in ring]
+    min_lon, max_lon, min_lat, max_lat = min(lons), max(lons), min(lats), max(lats)
+    base = base_ulpin(building_id)
+
+    image_bytes = await plan.read() if plan else None
+    seg = segment_floorplan(image_bytes)
+
+    lat_mid = (min_lat + max_lat) / 2
+    width_m = max(1.0, (max_lon - min_lon) * 111320 * math.cos(math.radians(lat_mid)))
+    depth_m = max(1.0, (max_lat - min_lat) * 110540)
+
+    units = []
+    for floor_index in list(range(-int(basements), 0)) + list(range(1, int(floors) + 1)):
+        floor_units = []
+        for j, (x0, y0, x1, y1) in enumerate(seg["rects"], start=1):
+            ulp = unit_ulpin(base, floor_index, j)
+            owner = owner_for(ulp, floor_index)
+            poly = [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]
+            poly_m = [[x * width_m, y * depth_m] for x, y in poly[:-1]]
+            area = abs(ShPolygon(poly_m).area)
+            floor_units.append({
+                "unit_ulpin": ulp,
+                "base_ulpin": base,
+                "floor_index": floor_index,
+                "unit_no": j,
+                "polygon": poly,
+                "area_sqm": round(area, 2),
+                "rights_type": owner["rights_type"],
+                "owner_id": owner["owner_id"],
+                "owner_name": owner["owner_name"],
+                "segmentation": seg["source"],
+                "validation_status": "valid",
+            })
+        # topology check (PRD FR13): units on a floor must not overlap
+        for a, b in combinations(floor_units, 2):
+            pa = ShPolygon(a["polygon"][:-1])
+            pb = ShPolygon(b["polygon"][:-1])
+            if pa.intersection(pb).area > 1e-9:
+                a["validation_status"] = "conflict"
+                b["validation_status"] = "conflict"
+        units.extend(floor_units)
+
+    saved = save_units(building_id, units)
+    return {
+        "building_id": building_id,
+        "base_ulpin": base,
+        "segmentation": seg["source"],
+        "floors": floors,
+        "basements": basements,
+        "unit_count": len(units),
+        "saved": saved,
+        "units": units,
+    }
+
+
 # ---------------- Desktop / production serving ----------------
 # The Electron desktop shell spawns this backend and loads http://localhost:<port>
 # directly, so the API is aliased under /api/ (the frontend's fetch base) and

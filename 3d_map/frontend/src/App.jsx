@@ -8,6 +8,7 @@ import BuildingsMap from './components/BuildingsMap.jsx'
 // heavy libs (maplibre ~800 KB, three + drei ~1 MB) load only on the pages /
 // views that actually need them
 const LidarMap = lazy(() => import('./components/LidarMap.jsx'))
+const UlpinView = lazy(() => import('./components/UlpinView.jsx'))
 
 const PageFallback = () => <div className="loading muted">loading…</div>
 
@@ -42,6 +43,12 @@ export default function App() {
         path="/dashboard"
         element={
           session ? <Dashboard session={session} onLogout={() => updateSession(null)} /> : <Navigate to="/login" replace />
+        }
+      />
+      <Route
+        path="/ulpin"
+        element={
+          session ? <UlpinPage session={session} onLogout={() => updateSession(null)} /> : <Navigate to="/login" replace />
         }
       />
       <Route
@@ -91,6 +98,9 @@ function Topbar({ session, onLogout, children }) {
       <nav className="mode-switch">
         <NavLink to="/dashboard" end className={({ isActive }) => `btn ${isActive ? 'primary' : ''}`}>
           parcels
+        </NavLink>
+        <NavLink to="/ulpin" className={({ isActive }) => `btn ${isActive ? 'primary' : ''}`}>
+          ulpin units
         </NavLink>
         {session.role !== 'citizen' && (
           <NavLink to="/lidar" className={({ isActive }) => `btn ${isActive ? 'primary' : ''}`}>
@@ -861,6 +871,17 @@ function LidarPage({ session, onLogout }) {
           canEdit={session.role !== 'citizen'} // surveyor or registrar
           user={{ name: session.name, role: session.role, username: session.username }}
         />
+      </Suspense>
+    </div>
+  )
+}
+
+function UlpinPage({ session, onLogout }) {
+  return (
+    <div className="app">
+      <Topbar session={session} onLogout={onLogout} />
+      <Suspense fallback={<PageFallback />}>
+        <UlpinView session={session} />
       </Suspense>
     </div>
   )

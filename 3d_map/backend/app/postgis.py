@@ -45,6 +45,24 @@ CREATE INDEX IF NOT EXISTS lidar_buildings_geom_gix
     ON lidar_buildings USING GIST (geom);
 CREATE INDEX IF NOT EXISTS lidar_buildings_job_idx ON lidar_buildings (job_id);
 
+-- 3D ULPIN units: one row per vertical unit of a building
+CREATE TABLE IF NOT EXISTS ulpin_units (
+    unit_ulpin TEXT PRIMARY KEY,
+    building_id TEXT NOT NULL,
+    base_ulpin TEXT NOT NULL,
+    floor_index INT NOT NULL,
+    unit_no INT NOT NULL,
+    polygon JSONB NOT NULL,
+    area_sqm DOUBLE PRECISION,
+    rights_type TEXT,
+    owner_id TEXT,
+    owner_name TEXT,
+    segmentation TEXT,
+    validation_status TEXT DEFAULT 'valid',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ulpin_units_building_idx ON ulpin_units (building_id);
+
 -- one row per extraction run; buildings reference their scan session
 CREATE TABLE IF NOT EXISTS lidar_sessions (
     session_id TEXT PRIMARY KEY,
@@ -340,3 +358,72 @@ def clear_buildings():
     with _conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM lidar_buildings")
+
+
+# ---------------- 3D ULPIN units ----------------
+
+def save_units(building_id, units):
+    """Replace the full unit tree of one building; returns the saved count."""
+    ensure_init()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM ulpin_units WHERE building_id = %s", (building_id,))
+            if units:
+                rows = [
+                    (
+                        u["unit_ulpin"], building_id, u["base_ulpin"], u["floor_index"],
+                        u["unit_no"], json.dumps(u["polygon"]), u.get("area_sqm"),
+                        u.get("rights_type"), u.get("owner_id"), u.get("owner_name"),
+                        u.get("segmentation"), u.get("validation_status", "valid"),
+                    )
+                    for u in units
+                ]
+                psycopg2.extras.execute_batch(
+                    cur,
+                    """INSERT INTO ulpin_units (unit_ulpin, building_id, base_ulpin, floor_index,
+                                               unit_no, polygon, area_sqm, rights_type, owner_id,
+                                               owner_name, segmentation, validation_status)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (unit_ulpin) DO UPDATE SET
+                         polygon = EXCLUDED.polygon, area_sqm = EXCLUDED.area_sqm,
+                         rights_type = EXCLUDED.rights_type, owner_id = EXCLUDED.owner_id,
+                         owner_name = EXCLUDED.owner_name, segmentation = EXCLUDED.segmentation,
+                         validation_status = EXCLUDED.validation_status""",
+                    rows,
+                    page_size=500,
+                )
+            cur.execute("SELECT COUNT(*) FROM ulpin_units WHERE building_id = %s", (building_id,))
+            return cur.fetchone()[0]
+
+
+def fetch_units(building_id):
+    """All ULPIN units of one building, ordered floor then unit number."""
+    ensure_init()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT unit_ulpin, base_ulpin, floor_index, unit_no, polygon, area_sqm,
+                          rights_type, owner_id, owner_name, segmentation, validation_status
+                   FROM ulpin_units WHERE building_id = %s
+                   ORDER BY floor_index, unit_no""",
+                (building_id,),
+            )
+            rows = cur.fetchall()
+    return [
+        {
+            "unit_ulpin": r[0], "building_id": building_id, "base_ulpin": r[1],
+            "floor_index": r[2], "unit_no": r[3], "polygon": r[4], "area_sqm": r[5],
+            "rights_type": r[6], "owner_id": r[7], "owner_name": r[8],
+            "segmentation": r[9], "validation_status": r[10],
+        }
+        for r in rows
+    ]
+
+
+def delete_units(building_id):
+    """Remove the whole unit tree of one building; returns removed count."""
+    ensure_init()
+    with _conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM ulpin_units WHERE building_id = %s", (building_id,))
+            return cur.rowcount

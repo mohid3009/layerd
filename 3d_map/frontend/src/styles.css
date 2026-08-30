@@ -1263,6 +1263,29 @@ input[type='file']::file-selector-button:hover { border-color: rgba(232, 232, 23
 .proposed-change .old-val { color: var(--muted); text-decoration: line-through; }
 .proposed-change .new-val { color: #ffb84d; font-weight: 600; }
 
+/* ---------- 3D ULPIN explorer ---------- */
+.ulpin-search {
+  width: 100%;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  margin-bottom: 8px;
+}
+.ulpin-search:focus { border-color: var(--border-strong); }
+.ulpin-list { max-height: 260px; overflow-y: auto; }
+.ulpin-floor-head {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: #86868b;
+  margin: 10px 0 4px;
+}
+
 /* ---------- area grouping + session navigation ---------- */
 .group-row,
 .nav-row {

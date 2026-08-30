@@ -74,3 +74,18 @@ export const confirmBuildingEdit = (buildingId, status, entry) =>
 export const deleteBuilding = (buildingId) =>
   req(`/lidar/buildings/${encodeURIComponent(buildingId)}`, { method: 'DELETE' })
 export const getRegion = (lat, lon) => req(`/lidar/regions?lat=${lat}&lon=${lon}`)
+
+// ── 3D ULPIN units ──────────────────────────────────────────────────────────
+export const fetchUnits = (buildingId) =>
+  req(`/lidar/units?building_id=${encodeURIComponent(buildingId)}`)
+export const deleteUnits = (buildingId) =>
+  req(`/lidar/units?building_id=${encodeURIComponent(buildingId)}`, { method: 'DELETE' })
+export const generateUnits = (buildingId, { floors, basements, floorHeight, planFile }) => {
+  const fd = new FormData()
+  fd.append('building_id', buildingId)
+  fd.append('floors', String(floors))
+  fd.append('basements', String(basements))
+  fd.append('floor_height', String(floorHeight))
+  if (planFile) fd.append('plan', planFile)
+  return req('/lidar/units/generate', { method: 'POST', body: fd })
+}
