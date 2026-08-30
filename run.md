@@ -173,7 +173,27 @@ from the cloud itself and checks both the measured and the 1-storey fallback pat
 
 ---
 
-## Start the App (two terminals)
+## Start the App (three ways)
+
+### A. Desktop app (Electron)
+
+```powershell
+cd 3d_map\desktop
+npm install        # once (downloads Electron)
+npm start          # spawns the backend + opens the Layerd window
+```
+
+- The shell starts the FastAPI backend from `lidarvenv` on a **free port** and
+  loads the built UI served by that backend — everything shares one origin
+  (the API is aliased under `/api/`, so the frontend needs no proxy).
+- `npm run dev` — dev mode: expects the Vite dev server (`npm run dev` in
+  `3d_map/frontend`) and runs the backend with `--reload`.
+- PostgreSQL must be running (the app still opens without it — persistence is
+  simply disabled).
+- Requires a one-time `npm run build` in `3d_map/frontend` so `dist/` exists
+  (the backend serves it).
+
+### B. Web (two terminals)
 
 ### Terminal 1 — Backend
 

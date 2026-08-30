@@ -1,0 +1,13 @@
+{
+  "name": "layerd-desktop",
+  "version": "1.0.0",
+  "description": "Layerd desktop shell (Electron) — spawns the FastAPI backend and loads the app",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0"
+  }
+}
