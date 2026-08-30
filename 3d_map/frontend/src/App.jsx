@@ -127,6 +127,7 @@ function Dashboard({ session, onLogout }) {
   const [panelTab, setPanelTab] = useState('sessions') // registrar sidebar tab
   const [toast, setToast] = useState(null) // { kind: 'success' | 'info', text }
   const [resolvingIds, setResolvingIds] = useState(() => new Set()) // rows animating out
+  const [unavailableErr, setUnavailableErr] = useState(null) // why the DB is unreachable
   const toastTimerRef = useRef(null)
 
   useEffect(() => {
@@ -142,10 +143,11 @@ function Dashboard({ session, onLogout }) {
         setFocusSid(null)
         setState(fc.features?.length ? 'ready' : 'empty')
       })
-      .catch(() => {
+      .catch((e) => {
         if (cancelled) return
         setFeatures([])
         setSessions([])
+        setUnavailableErr(e?.message || 'unknown error')
         setState('unavailable')
       })
     return () => { cancelled = true }
@@ -550,8 +552,12 @@ function Dashboard({ session, onLogout }) {
           {state === 'unavailable' && (
             <div className="lidar-empty muted">
               <h3>PostGIS unavailable</h3>
-              <p>start PostgreSQL and refresh — saved buildings live in the <span className="mono">layerd</span> database.</p>
-              <button className="btn" onClick={() => setReloadKey((k) => k + 1)}>retry</button>
+              <p>
+                start PostgreSQL and refresh — saved buildings live in the <span className="mono">layerd</span> database.
+                retrying automatically every 5s…
+              </p>
+              {unavailableErr && <p className="error mono tiny">reason: {unavailableErr}</p>}
+              <button className="btn" onClick={() => setReloadKey((k) => k + 1)}>retry now</button>
             </div>
           )}
         </section>
