@@ -12,7 +12,7 @@
  *
  * PostgreSQL must be running locally (the app degrades gracefully without it).
  */
-const { app, BrowserWindow, shell } = require('electron')
+const { app, BrowserWindow, shell, Tray, Menu, nativeImage } = require('electron')
 const { spawn } = require('child_process')
 const http = require('http')
 const net = require('net')
@@ -22,10 +22,14 @@ const fs = require('fs')
 const DEV = !!process.env.ELECTRON_DEV || process.argv.includes('--dev')
 const DEV_PORT = process.env.BACKEND_PORT || 8000
 const ROOT = path.join(__dirname, '..', '..') // repo root
+// --hidden: start minimized to the tray (used as the login-item launch arg)
+const HIDDEN_LAUNCH = process.argv.includes('--hidden') || process.env.ELECTRON_HIDDEN === '1'
 
 let backend = null
 let backendUrl = null
 let win = null
+let tray = null
+let quitting = false
 
 function pythonExe() {
   const venvWin = path.join(ROOT, 'lidarvenv', 'Scripts', 'python.exe')
@@ -105,9 +109,25 @@ function createWindow(url) {
     return { action: 'deny' }
   })
   win.loadURL(url)
+  win.on('close', (e) => {
+    // running in tray mode: hide instead of closing so the backend keeps running
+    if (tray && !quitting) {
+      e.preventDefault()
+      win.hide()
+    }
+  })
   win.on('closed', () => {
     win = null
   })
+}
+
+function showWindow() {
+  if (win && !win.isDestroyed()) {
+    win.show()
+    win.focus()
+  } else if (backendUrl) {
+    createWindow(backendUrl)
+  }
 }
 
 function errorWindow(message) {
@@ -124,32 +144,122 @@ function errorWindow(message) {
   )
 }
 
-app.whenReady().then(async () => {
-  if (DEV) {
-    // dev mode: fixed port so the Vite proxy (5173 -> 8000) finds the backend
-    backendUrl = `http://localhost:${DEV_PORT}`
-    startBackend(DEV_PORT)
+/* ---------------- open at login ---------------- */
+
+// args used for the login-item registration. Unpackaged apps run through
+// electron.exe, so the app directory must be passed as an argument too.
+function loginItemArgs() {
+  return app.isPackaged ? ['--hidden'] : ['.', '--hidden']
+}
+
+function setOpenAtLogin(enabled) {
+  if (DEV) return // never touch the registry from a dev session
+  app.setLoginItemSettings({
+    openAtLogin: !!enabled,
+    path: process.execPath,
+    args: loginItemArgs(),
+  })
+}
+
+function getOpenAtLogin() {
+  if (DEV) return false
+  return !!app.getLoginItemSettings({ args: loginItemArgs() }).openAtLogin
+}
+
+// enabled by default on the first production run; toggleable from the tray menu
+function syncLoginItem() {
+  if (DEV || getOpenAtLogin()) return
+  setOpenAtLogin(true)
+}
+
+/* ---------------- tray ---------------- */
+
+// 16x16 blocky "L" drawn as raw BGRA — no icon asset needed
+function makeTrayIcon() {
+  const size = 16
+  const buf = Buffer.alloc(size * size * 4)
+  const px = (x, y, on) => {
+    const i = (y * size + x) * 4
+    buf[i] = buf[i + 1] = buf[i + 2] = on ? 0xff : 0
+    buf[i + 3] = on ? 0xff : 0
+  }
+  for (let y = 3; y < 13; y++) for (let x = 4; x < 7; x++) px(x, y, true) // vertical stroke
+  for (let y = 10; y < 13; y++) for (let x = 4; x < 12; x++) px(x, y, true) // horizontal foot
+  return nativeImage.createFromBuffer(buf, { width: size, height: size })
+}
+
+function createTray() {
+  tray = new Tray(makeTrayIcon())
+  tray.setToolTip('Layerd')
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Open Layerd', click: () => showWindow() },
+      { type: 'separator' },
+      {
+        label: 'Open at login',
+        type: 'checkbox',
+        checked: getOpenAtLogin(),
+        click: (item) => setOpenAtLogin(item.checked),
+      },
+      { type: 'separator' },
+      {
+        label: 'Quit Layerd',
+        click: () => {
+          quitting = true
+          stopBackend()
+          app.quit()
+        },
+      },
+    ]),
+  )
+  tray.on('double-click', () => showWindow())
+}
+
+// single instance: a manual launch while the app already runs from login
+// just focuses the existing window instead of spawning a second backend
+const gotLock = app.requestSingleInstanceLock()
+if (gotLock) {
+  app.on('second-instance', () => showWindow())
+
+  app.whenReady().then(async () => {
+    syncLoginItem()
+    createTray()
+    if (DEV) {
+      // dev mode: fixed port so the Vite proxy (5173 -> 8000) finds the backend
+      backendUrl = `http://localhost:${DEV_PORT}`
+      startBackend(DEV_PORT)
+      const ok = await waitBackend(backendUrl)
+      if (!ok) return errorWindow('The backend did not become healthy — check the console output.')
+      createWindow('http://localhost:5173')
+      win.webContents.openDevTools({ mode: 'detach' })
+      return
+    }
+    // production mode: bind a free port so we never clash with a dev server
+    const port = await getFreePort()
+    backendUrl = `http://localhost:${port}`
+    startBackend(port)
     const ok = await waitBackend(backendUrl)
-    if (!ok) return errorWindow('The backend did not become healthy — check the console output.')
-    createWindow('http://localhost:5173')
-    win.webContents.openDevTools({ mode: 'detach' })
-    return
-  }
-  // production mode: bind a free port so we never clash with a dev server
-  const port = await getFreePort()
-  backendUrl = `http://localhost:${port}`
-  startBackend(port)
-  const ok = await waitBackend(backendUrl)
-  if (!ok) {
-    return errorWindow(
-      'Check that the <code>lidarvenv</code> Python environment exists at the repo root ' +
-        '(or that <code>python</code> is on PATH).',
-    )
-  }
-  createWindow(backendUrl)
+    if (!ok) {
+      if (HIDDEN_LAUNCH) return // silent at login; user can open from the tray later
+      return errorWindow(
+        'Check that the <code>lidarvenv</code> Python environment exists at the repo root ' +
+          '(or that <code>python</code> is on PATH).',
+      )
+    }
+    if (!HIDDEN_LAUNCH) createWindow(backendUrl)
+  })
+} else {
+  app.quit()
+}
+
+app.on('before-quit', () => {
+  quitting = true
 })
 
 app.on('window-all-closed', () => {
-  stopBackend()
-  app.quit()
+  // stay alive in the tray unless the user explicitly quit from the tray menu
+  if (quitting) {
+    stopBackend()
+    app.quit()
+  }
 })
