@@ -2,8 +2,8 @@
 Floor-plan segmentation.
 
 Primary: YOLOv11 segmentation (ultralytics) on an uploaded floor plan image —
-weights default to `yolo11n-seg.pt` (auto-downloaded by ultralytics on first
-use; override with the YOLO_WEIGHTS env var). Requires `pip install ultralytics`.
+weights are bundled at `3d_map/yolo-v11-wt/yolo11n-seg.pt` (override with the
+YOLO_WEIGHTS env var; auto-download as a last resort). Requires `ultralytics`.
 
 Fallback: a randomly generated floor plan — the floor plate is subdivided by
 recursive splitting into plausible unit cells. Used when no image is uploaded,
@@ -26,14 +26,34 @@ def yolo_available():
         return False
 
 
+_BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # 3d_map/
+
+_WEIGHTS_CANDIDATES = (
+    # weights shipped with the repo (3d_map/yolo-v11-wt/yolo11n-seg.pt)
+    os.path.join(_BASE, "yolo-v11-wt", "yolo11n-seg.pt"),
+    os.path.join(_BASE, "backend", "yolo11n-seg.pt"),
+    os.path.join("yolo-v11-wt", "yolo11n-seg.pt"),  # relative to the CWD
+    "yolo11n-seg.pt",  # CWD / ultralytics auto-download as last resort
+)
+
+
+def _weights_path():
+    env = os.environ.get("YOLO_WEIGHTS")
+    if env:
+        return env
+    for cand in _WEIGHTS_CANDIDATES:
+        if os.path.isfile(cand):
+            return cand
+    return _WEIGHTS_CANDIDATES[-1]  # let ultralytics auto-download
+
+
 def _get_model():
     global _MODEL
     if _MODEL is not None:
         return _MODEL
     from ultralytics import YOLO
 
-    weights = os.environ.get("YOLO_WEIGHTS", "yolo11n-seg.pt")
-    _MODEL = YOLO(weights)
+    _MODEL = YOLO(_weights_path())
     return _MODEL
 
 
