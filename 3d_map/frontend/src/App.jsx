@@ -96,17 +96,30 @@ function Topbar({ session, onLogout, children }) {
         <span className="muted tiny">3D cadastral system · SIH26095</span>
       </div>
       <nav className="mode-switch">
-        <NavLink to="/dashboard" end className={({ isActive }) => `btn ${isActive ? 'primary' : ''}`}>
-          parcels
-        </NavLink>
-        <NavLink to="/ulpin" className={({ isActive }) => `btn ${isActive ? 'primary' : ''}`}>
-          ulpin units
+        <NavLink
+          to="/dashboard"
+          end
+          className={({ isActive }) => `btn ${isActive ? 'primary' : ''}`}
+          title="every building saved from your LiDAR scans"
+        >
+          dashboard
         </NavLink>
         {session.role !== 'citizen' && (
-          <NavLink to="/lidar" className={({ isActive }) => `btn ${isActive ? 'primary' : ''}`}>
+          <NavLink
+            to="/lidar"
+            className={({ isActive }) => `btn ${isActive ? 'primary' : ''}`}
+            title="upload a .laz scan and extract buildings from it"
+          >
             LiDAR scan
           </NavLink>
         )}
+        <NavLink
+          to="/ulpin"
+          className={({ isActive }) => `btn ${isActive ? 'primary' : ''}`}
+          title="3D unit tree — floors, ULPINs, owners per building"
+        >
+          ULPIN units
+        </NavLink>
       </nav>
       {children}
       <div className="session-box">
@@ -139,6 +152,12 @@ function Dashboard({ session, onLogout }) {
   const [resolvingIds, setResolvingIds] = useState(() => new Set()) // rows animating out
   const [unavailableErr, setUnavailableErr] = useState(null) // why the DB is unreachable
   const toastTimerRef = useRef(null)
+  // first-run orientation: dismissible, remembered for the browser session
+  const [guideOpen, setGuideOpen] = useState(() => !sessionStorage.getItem('layerd-guide-seen'))
+  const dismissGuide = () => {
+    setGuideOpen(false)
+    sessionStorage.setItem('layerd-guide-seen', '1')
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -518,6 +537,27 @@ function Dashboard({ session, onLogout }) {
     <div className="app">
       <Topbar session={session} onLogout={onLogout} />
       {toast && <div className={`toast ${toast.kind}`}>{toast.text}</div>}
+
+      {guideOpen && state === 'ready' && (
+        <div className="guide-strip">
+          <span className="guide-title tiny muted">how it works</span>
+          {canScan && (
+            <span className="guide-step tiny">
+              <b>1</b> run a <NavLink to="/lidar">LiDAR scan</NavLink> on a .laz point cloud
+            </span>
+          )}
+          <span className="guide-step tiny">
+            <b>{canScan ? 2 : 1}</b> click any building on the map for details &amp; edits
+          </span>
+          <span className="guide-step tiny">
+            <b>{canScan ? 3 : 2}</b> open its <NavLink to="/ulpin">ULPIN units</NavLink> — floors, owners, status
+          </span>
+          <span style={{ flex: 1 }} />
+          <button className="btn tiny" onClick={dismissGuide}>
+            got it
+          </button>
+        </div>
+      )}
 
       <div className="parcel-strip">
         <span className="muted tiny">

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
@@ -6,6 +7,7 @@ import { getSavedBuildings, fetchUnits, generateUnits, deleteUnits } from '../ap
 import BuildingsMap from './BuildingsMap.jsx'
 
 const FH = 3 // storey height used by the generator (m)
+const FLOOR_GAP = 0.7 // vertical gap between floors (m) — keeps every level visible in 3D
 
 function floorColor(floorIndex, maxFloor) {
   if (floorIndex < 0) return '#595969' // basement grey
@@ -25,7 +27,9 @@ function UnitMesh({ unit, w, d, fh, color, selected, onPick }) {
   return (
     <mesh
       geometry={geo}
-      position={[0, unit.floor_index * fh, 0]}
+      position={[0, unit.floor_index * (fh + FLOOR_GAP), 0]}
+      castShadow
+      receiveShadow
       onClick={(e) => {
         e.stopPropagation()
         onPick(unit)
@@ -36,7 +40,7 @@ function UnitMesh({ unit, w, d, fh, color, selected, onPick }) {
       <meshLambertMaterial
         color={selected ? '#ffffff' : unit.validation_status === 'conflict' ? '#e05252' : color}
         transparent
-        opacity={selected ? 0.95 : 0.85}
+        opacity={selected ? 1 : 0.96}
       />
     </mesh>
   )
@@ -56,12 +60,25 @@ export default function UlpinView({ session, initialBuilding = null }) {
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState(null)
   const [err, setErr] = useState(null)
+  const [query, setQuery] = useState('') // building picker search
 
   useEffect(() => {
     getSavedBuildings()
       .then((fc) => setBuildings(fc.features || []))
       .catch(() => {})
   }, [])
+
+  // searchable list of buildings for the picker (name or id, case-insensitive)
+  const candidates = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    const props = buildings.map((b) => b.properties)
+    if (!needle) return props
+    return props.filter(
+      (p) =>
+        (p.name || '').toLowerCase().includes(needle) ||
+        (p.building_id || '').toLowerCase().includes(needle),
+    )
+  }, [buildings, query])
 
   const selected = buildings.find((b) => b.properties.building_id === selId) || null
 
@@ -151,6 +168,10 @@ export default function UlpinView({ session, initialBuilding = null }) {
   const displayUnits = units.length ? units : mockSlabs
   const selSlab = mockSlabs.find((s) => s.unit_ulpin === selUlpin) || null
   const maxFloor = displayUnits.reduce((m, u) => Math.max(m, u.floor_index), 1)
+  const minFloor = displayUnits.reduce((m, u) => Math.min(m, u.floor_index), 0)
+  // exploded stack size — drives camera framing and the shadow camera bounds
+  const totalH = (maxFloor - minFloor + 2) * (FH + FLOOR_GAP)
+  const span = Math.max(dims ? Math.max(dims.w, dims.d) : 10, totalH) * 2.2
   const baseUlpin = units[0]?.base_ulpin || null
 
   // units grouped by floor for the sidebar list
@@ -185,16 +206,42 @@ export default function UlpinView({ session, initialBuilding = null }) {
               </div>
               <div className="ulpin-3d-stage">
                 <Canvas
+                  shadows
                   camera={{
-                    position: [0, Math.max(dims.w, dims.d) * 1.5, Math.max(dims.w, dims.d) * 1.7],
+                    position: [
+                      0,
+                      Math.max(dims.w, dims.d) * 1.3 + totalH * 0.9,
+                      Math.max(dims.w, dims.d) * 1.6 + totalH * 0.55,
+                    ],
                     fov: 42,
                     near: 0.1,
-                    far: 4000,
+                    far: 12000,
                   }}
                 >
-                  <ambientLight intensity={0.85} />
-                  <directionalLight position={[dims.w, dims.w * 2, dims.d]} intensity={0.9} />
+                  <ambientLight intensity={0.8} />
+                  <directionalLight
+                    position={[dims.w * 1.2, (maxFloor + 4) * (FH + FLOOR_GAP) + dims.d, dims.d * 1.2]}
+                    intensity={1.05}
+                    castShadow
+                    shadow-mapSize-width={2048}
+                    shadow-mapSize-height={2048}
+                    shadow-camera-near={1}
+                    shadow-camera-far={span * 8}
+                    shadow-camera-left={-span}
+                    shadow-camera-right={span}
+                    shadow-camera-top={span}
+                    shadow-camera-bottom={-span}
+                  />
                   <gridHelper args={[Math.max(dims.w, dims.d) * 4, 24, '#2c2c2c', '#1c1c1c']} />
+                  {/* shadow catcher — a plane just below the lowest level */}
+                  <mesh
+                    receiveShadow
+                    rotation={[-Math.PI / 2, 0, 0]}
+                    position={[0, minFloor * (FH + FLOOR_GAP) - 0.02, 0]}
+                  >
+                    <planeGeometry args={[span * 8, span * 8]} />
+                    <shadowMaterial transparent opacity={0.38} />
+                  </mesh>
                   {displayUnits.map((u) => (
                     <UnitMesh
                       key={u.unit_ulpin}
@@ -218,10 +265,55 @@ export default function UlpinView({ session, initialBuilding = null }) {
           {!selId && (
             <div className="panel-section">
               <h3>3D ULPIN explorer</h3>
-              <p className="muted tiny">
-                click any building on the map — only that building opens in 3D with all of its
-                sections, ULPINs, owners and details.
-              </p>
+              {buildings.length === 0 ? (
+                <>
+                  <p className="muted tiny">
+                    no saved buildings yet — run a LiDAR scan first, then come back here to open a
+                    building in 3D and mint its ULPIN unit tree.
+                  </p>
+                  <div className="btn-row">
+                    {canManage && (
+                      <Link to="/lidar" className="btn primary">
+                        run a LiDAR scan
+                      </Link>
+                    )}
+                    <Link to="/dashboard" className="btn">
+                      open dashboard
+                    </Link>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="muted tiny">
+                    pick a building below or click it on the map — it opens in 3D with all of its
+                    sections, ULPINs, owners and details.
+                  </p>
+                  <input
+                    className="search"
+                    placeholder="search by name or id…"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                  />
+                  <div className="picker-list">
+                    {candidates.map((p) => (
+                      <div
+                        key={p.building_id}
+                        className="nav-row"
+                        onClick={() => selectBuilding(p.building_id)}
+                      >
+                        <span className="session-label" title={p.building_id}>
+                          {p.name || p.building_id}
+                        </span>
+                        <span className="muted tiny">{p.stories ?? '—'} str</span>
+                        <span className="enter-hint tiny">open →</span>
+                      </div>
+                    ))}
+                    {!candidates.length && (
+                      <p className="muted tiny">no building matches “{query}”.</p>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           )}
           {selected && (
